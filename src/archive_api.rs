@@ -221,16 +221,25 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
                 files_map
                     .into_iter()
                     .filter_map(|(name, value)| {
+                        // Debug: Print the raw value being processed
+                        eprintln!("Processing file: name='{}', value='{:?}'", name, value);
                         // Attempt to deserialize each value in the map into FileDetailsInternal
-                        match serde_json::from_value::<FileDetailsInternal>(value) {
-                            Ok(internal_details) => Some(FileDetails {
-                                // Remove leading '/' from filename if present (common in API)
-                                name: name.strip_prefix('/').unwrap_or(&name).to_string(),
-                                source: internal_details.source,
-                                format: internal_details.format,
-                                size: internal_details.size,
-                                md5: internal_details.md5,
-                            }),
+                        let parse_result = serde_json::from_value::<FileDetailsInternal>(value.clone()); // Clone value
+
+                        match parse_result {
+                            Ok(internal_details) => {
+                                eprintln!("Successfully parsed internal details for '{}': {:?}", name, internal_details);
+                                let file_details = FileDetails {
+                                    // Remove leading '/' from filename if present (common in API)
+                                    name: name.strip_prefix('/').unwrap_or(&name).to_string(),
+                                    source: internal_details.source,
+                                    format: internal_details.format,
+                                    size: internal_details.size,
+                                    md5: internal_details.md5,
+                                };
+                                eprintln!("Constructed FileDetails for '{}': {:?}", name, file_details);
+                                Some(file_details)
+                            },
                             Err(e) => {
                                 // Print error to stderr for debugging during tests
                                 eprintln!("Error parsing file details for '{}': {}", name, e);
