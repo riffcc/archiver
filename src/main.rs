@@ -192,11 +192,14 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            // Handle download status updates
-            Some(status) = download_status_rx.recv() => {
+            // Handle download progress updates
+            Some(status) = download_progress_rx.recv() => { // Use correct receiver name
                  // Check for a final status message to reset the flag
-                 if status.starts_with("Completed download") || status.starts_with("Download Error:") || status.starts_with("No files found") {
-                     app.is_downloading = false;
+                 // Note: CollectionCompleted is now the primary signal for bulk completion
+                 // Individual ItemCompleted or Error messages might not reset is_downloading
+                 // if it's part of a larger bulk download. Resetting only on CollectionCompleted or Error.
+
+                 // Update App state based on progress message
                  }
                  // Update App state based on progress message
                  match status {
@@ -347,7 +350,7 @@ async fn download_item(
      let item_dir = Path::new(base_dir).join(collection).join(item_id);
      fs::create_dir_all(&item_dir).await.context("Failed to create item directory")?;
 
-     let mut success_count = 0;
+     // Removed unused success_count
      let mut item_failed = false;
 
      for file in details.files.iter() {
@@ -394,7 +397,7 @@ async fn download_collection(
     let mut join_handles = vec![];
     let mut total_failed_items = 0; // Track failed items
 
-    for (index, item_id) in all_identifiers.into_iter().enumerate() {
+    for (_index, item_id) in all_identifiers.into_iter().enumerate() { // Prefix index with _
         // Clone necessary data for the item download task
         let client_clone = client.clone();
         let base_dir_clone = base_dir.to_string();
