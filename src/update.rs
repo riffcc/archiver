@@ -40,42 +40,22 @@ pub fn update(app: &mut App, key_event: KeyEvent) -> bool {
     }
 }
 
-/// Handles input when in the main browsing state.
+/// Handles input when in the main browsing state (`AppState::Browsing`).
+/// Dispatches to specific handlers based on whether the input field is being edited.
 fn handle_browsing_input(app: &mut App, key_event: KeyEvent) -> bool {
+    if app.is_editing_input {
+        handle_browsing_input_edit_mode(app, key_event)
+    } else {
+        handle_browsing_input_navigate_mode(app, key_event)
+    }
+}
+
+/// Handles key events when editing the collection input field in Browsing state.
+fn handle_browsing_input_edit_mode(app: &mut App, key_event: KeyEvent) -> bool {
     let mut trigger_api_call = false;
     match key_event.code {
-        // Basic navigation and exit
-        KeyCode::Esc => app.quit(), // Allow Esc to always quit
-        KeyCode::Char('q') => app.quit(),
-        KeyCode::Char('c') | KeyCode::Char('C') if key_event.modifiers == KeyModifiers::CONTROL => {
-            app.quit()
-        }
-
-        // Download trigger (Check specific chars before general char input)
-        KeyCode::Char('d') => {
-            if app.list_state.selected().is_some() { // Only if an item is selected
-                if app.settings.download_directory.is_none() {
-                    // No download directory set, prompt the user
-                    app.current_state = AppState::AskingDownloadDir;
-                    app.collection_input.clear(); // Reuse input field for dir path
-                    app.cursor_position = 0;
-                    app.error_message = None; // Clear any previous errors
-                } else {
-                    // Directory is set, trigger download (logic to be added later)
-                    println!("Download triggered for selected item!"); // Placeholder
-                    // TODO: Set state to Downloading and trigger async download task
-                    app.error_message = Some("Download started (placeholder)...".to_string()); // Temp feedback
-                }
-            } else {
-                 app.error_message = Some("Select an item to download first.".to_string());
-            }
-        }
-
-        // General Collection Input field handling (must come after specific char checks)
+        // Input editing keys
         KeyCode::Char(to_insert) => {
-             // Prevent input if 'd' was handled above or other specific chars are added
-             // This check might be redundant if the match guards handle it, but explicit for clarity.
-             // If we add more specific KeyCode::Char('x') handlers, they should go above this arm.
             app.enter_char(to_insert);
         }
         KeyCode::Backspace => {
@@ -88,13 +68,24 @@ fn handle_browsing_input(app: &mut App, key_event: KeyEvent) -> bool {
             app.move_cursor_right();
         }
         KeyCode::Enter => {
-            // Signal that the main loop should trigger the API call
+            // Submit search, trigger API call, exit input mode
             trigger_api_call = true;
             app.items.clear(); // Clear old items
             app.list_state.select(None); // Reset selection
             app.error_message = None; // Clear previous errors
+            app.is_editing_input = false; // Switch to navigate mode
         }
+        // Esc is handled globally to exit input mode
+        // Ignore navigation/action keys while editing
+        KeyCode::Up | KeyCode::Down | KeyCode::Char('d') | KeyCode::Char('i') => {}
+        _ => {} // Ignore other keys like Home, End, etc for now
+    }
+    trigger_api_call
+}
 
+/// Handles key events when navigating the item list in Browsing state.
+fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) -> bool {
+     match key_event.code {
         // List navigation
         KeyCode::Down => {
             app.select_next_item();
@@ -102,11 +93,36 @@ fn handle_browsing_input(app: &mut App, key_event: KeyEvent) -> bool {
         KeyCode::Up => {
             app.select_previous_item();
         }
-
-        // Other keys are ignored in this state
-        _ => {}
-    };
-    trigger_api_call
+        // Enter edit mode
+        KeyCode::Char('i') | KeyCode::Enter => { // Allow Enter to also start editing
+            app.is_editing_input = true;
+        }
+        // Download trigger
+        KeyCode::Char('d') => {
+            if app.list_state.selected().is_some() { // Only if an item is selected
+                if app.settings.download_directory.is_none() {
+                    // No download directory set, prompt the user
+                    app.current_state = AppState::AskingDownloadDir;
+                    app.collection_input.clear(); // Reuse input field for dir path
+                    app.cursor_position = 0;
+                    app.error_message = None; // Clear any previous errors
+                    app.is_editing_input = true; // Asking for dir implies editing
+                } else {
+                    // Directory is set, trigger download (logic to be added later)
+                    println!("Download triggered for selected item!"); // Placeholder
+                    // TODO: Set state to Downloading and trigger async download task
+                    app.error_message = Some("Download started (placeholder)...".to_string()); // Temp feedback
+                }
+            } else {
+                 app.error_message = Some("Select an item to download first.".to_string());
+            }
+        }
+        // Ignore input editing keys while navigating
+        KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Left | KeyCode::Right => {}
+        // Esc and Quit keys are handled globally
+        _ => {} // Ignore other keys
+    }
+    false // Never trigger API call directly from navigate mode
 }
 
 /// Handles input when prompting for the download directory.
