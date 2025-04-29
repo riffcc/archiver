@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-use ratatui_widgets::input::Input; // Import the Input widget from its module
+use tui_framework_experiment::Input; // Import the Input widget from the new crate
 
 /// Renders the user interface widgets.
 pub fn render(app: &mut App, frame: &mut Frame) {
