@@ -190,6 +190,9 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
 
     let download_base_url = match (raw_details.server, raw_details.dir) {
         (Some(server), Some(dir)) => Some(format!("https://{}/{}", server, dir)),
+        _ => None, // Add default case
+    }; // Add closing semicolon
+
     // Ensure the identifier in the returned struct matches the one requested.
     // Use the variables extracted earlier.
     let details = ItemDetails {
