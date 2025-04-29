@@ -299,7 +299,9 @@ fn render_file_list_pane(app: &mut App, frame: &mut Frame, area: Rect) {
 
 
 fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
-    let status_text = if let Some(err) = &app.error_message {
+    let status_text = if let Some(status) = &app.download_status {
+        status.as_str() // Show download status first if available
+    } else if let Some(err) = &app.error_message {
         err.as_str()
     } else if app.is_loading {
         "Fetching collection data..."
@@ -308,16 +310,19 @@ fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
     } else if app.current_state == AppState::AskingDownloadDir {
         "Enter the full path for downloads. Esc to cancel."
     } else if app.current_state == AppState::ViewingItem {
-        "Viewing item details. Esc: Back, ↑/↓: Files, Enter: Download/View File (TODO)" // Updated hint
+        "Viewing item details. Esc: Back, ↑/↓: Files, Enter/d: Download File" // Updated hint
     } else if app.is_filtering_input {
         "Filtering Input. Press Esc to navigate list, Enter to search."
     } else {
-        "Navigating List. Press 'q' to quit, 'i' to filter, Enter to view, 'd' to download."
+        "Navigating List. Press 'q' to quit, 'i' to filter, Enter to view, 'd' to download item." // Updated hint
     };
 
-    let status_style = if app.error_message.is_some() {
+    let status_style = if app.error_message.is_some() || app.download_status.as_deref().unwrap_or("").contains("Error") {
         Style::default().fg(Color::Red)
-    } else {
+    } else if app.is_downloading || app.download_status.is_some() {
+         Style::default().fg(Color::Yellow) // Indicate ongoing or completed download
+    }
+     else {
         Style::default()
     };
 

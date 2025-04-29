@@ -1,33 +1,41 @@
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, DownloadAction, UpdateAction}; // Import new types
 use crate::settings;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::widgets::ListState; // Import ListState
+use ratatui::widgets::ListState;
 
 /// Handle key events based on the current application state and input mode.
-/// Returns `true` if a collection search API call should be triggered.
-pub fn update(app: &mut App, key_event: KeyEvent) -> bool {
+/// Returns an optional `UpdateAction` to be performed by the main loop.
+pub fn update(app: &mut App, key_event: KeyEvent) -> Option<UpdateAction> {
+    // Clear pending action at the start of handling a new event
+    app.pending_action = None;
+    // Clear previous download status message if not currently downloading
+    if !app.is_downloading {
+        app.download_status = None;
+    }
+
+
     // Global quit keys take precedence
     match key_event.code {
         KeyCode::Char('q') => {
             app.quit();
-            return false;
+            return None; // No action needed, just quit
         }
         KeyCode::Char('c') | KeyCode::Char('C') if key_event.modifiers == KeyModifiers::CONTROL => {
             app.quit();
-            return false;
+            return None; // No action needed, just quit
         }
         // Allow Esc to exit filter mode if currently filtering, otherwise quit (or handle state-specific Esc)
         KeyCode::Esc => {
             if app.is_filtering_input && app.current_state == AppState::Browsing {
                 app.is_filtering_input = false;
-                return false; // Don't quit yet, just exit filter mode
+                return None; // Don't quit yet, just exit filter mode
             } else if app.current_state == AppState::AskingDownloadDir || app.current_state == AppState::ViewingItem {
                  // Let the state handlers manage Esc for these states
             }
              else {
                 // If not filtering and not in a state with specific Esc handling, Esc quits
                 app.quit();
-                return false;
+                return None; // No action needed, just quit
             }
         }
         _ => {} // Other keys are handled by state/mode
@@ -38,13 +46,15 @@ pub fn update(app: &mut App, key_event: KeyEvent) -> bool {
         AppState::Browsing => handle_browsing_input(app, key_event),
         AppState::AskingDownloadDir => handle_asking_download_dir_input(app, key_event), // This state implies filtering
         AppState::ViewingItem => handle_viewing_item_input(app, key_event),
-        AppState::Downloading => false, // Ignore input during download for now
+        AppState::Downloading => {} // Ignore input during download for now
     }
+    // Return the pending action, if any was set
+    app.pending_action.clone()
 }
 
 /// Handles input when in the main browsing state (`AppState::Browsing`).
 /// Dispatches to specific handlers based on whether the input field is being filtered.
-fn handle_browsing_input(app: &mut App, key_event: KeyEvent) -> bool {
+fn handle_browsing_input(app: &mut App, key_event: KeyEvent) {
     if app.is_filtering_input {
         handle_browsing_input_filter_mode(app, key_event)
     } else {
@@ -53,8 +63,7 @@ fn handle_browsing_input(app: &mut App, key_event: KeyEvent) -> bool {
 }
 
 /// Handles key events when filtering the collection input field in Browsing state.
-fn handle_browsing_input_filter_mode(app: &mut App, key_event: KeyEvent) -> bool {
-    let mut trigger_api_call = false;
+fn handle_browsing_input_filter_mode(app: &mut App, key_event: KeyEvent) {
     match key_event.code {
         // Esc is handled globally to exit filter mode
         // Ignore navigation/action keys first (Up/Down for list nav, 'i' to enter filter mode)
@@ -74,8 +83,9 @@ fn handle_browsing_input_filter_mode(app: &mut App, key_event: KeyEvent) -> bool
             app.move_cursor_right();
         }
         KeyCode::Enter => {
-            // Submit search, trigger API call, exit filter mode
-            trigger_api_call = true;
+            // Submit search, set action, exit filter mode
+            app.pending_action = Some(UpdateAction::FetchCollection);
+            app.current_collection_name = Some(app.collection_input.clone()); // Store collection name
             app.items.clear(); // Clear old items
             app.list_state.select(None); // Reset selection
             app.error_message = None; // Clear previous errors
@@ -84,11 +94,10 @@ fn handle_browsing_input_filter_mode(app: &mut App, key_event: KeyEvent) -> bool
         // Ignore other keys not handled above
         _ => {}
     }
-    trigger_api_call
 }
 
 /// Handles key events when navigating the item list in Browsing state.
-fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) -> bool {
+fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) {
      match key_event.code {
         // List navigation
         KeyCode::Down => {
@@ -111,7 +120,8 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) -> bo
                     app.error_message = None; // Clear any previous message
                     app.current_item_details = None; // Clear previous details
                     app.file_list_state = ListState::default(); // Reset file list selection
-                    app.is_loading_details = true; // Set flag to trigger fetch in main loop
+                    app.is_loading_details = true; // Set flag
+                    app.pending_action = Some(UpdateAction::FetchItemDetails); // Set action
                  }
             } else {
                 // If no item is selected, Enter goes to filter mode
@@ -128,14 +138,18 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) -> bo
                     app.cursor_position = 0;
                     app.error_message = None; // Clear any previous errors
                     app.is_filtering_input = true; // Asking for dir implies filtering input
+                } else if let Some(selected_index) = app.list_state.selected() {
+                    // Directory is set, trigger download for the selected item
+                    if let Some(item) = app.items.get(selected_index) {
+                         app.pending_action = Some(UpdateAction::StartDownload(DownloadAction::Item(item.identifier.clone())));
+                         app.download_status = Some(format!("Queueing download for item: {}", item.identifier));
+                         // Main loop will set is_downloading = true when task starts
+                    }
                 } else {
-                    // Directory is set, trigger download (logic to be added later)
-                    println!("Download triggered for selected item: {}!", app.items[app.list_state.selected().unwrap()].identifier); // Placeholder
-                    // TODO: Set state to Downloading and trigger async download task
-                    app.error_message = Some("Download started (placeholder)...".to_string()); // Temp feedback
+                    app.error_message = Some("Select an item to download first.".to_string());
                 }
             } else {
-                 app.error_message = Some("Select an item to download first.".to_string());
+                 app.error_message = Some("Select an item to download first.".to_string()); // Should not happen if list_state has selection
             }
         }
         // Ignore input filtering keys while navigating
@@ -148,7 +162,7 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) -> bo
 }
 
 /// Handles input when prompting for the download directory.
-fn handle_asking_download_dir_input(app: &mut App, key_event: KeyEvent) -> bool {
+fn handle_asking_download_dir_input(app: &mut App, key_event: KeyEvent) {
      match key_event.code {
         KeyCode::Esc => {
             // Cancel entering download dir and return to browsing (navigate mode)
@@ -197,11 +211,10 @@ fn handle_asking_download_dir_input(app: &mut App, key_event: KeyEvent) -> bool 
         }
         _ => {} // Ignore other keys
     }
-    false // Never trigger collection search from this state
 }
 
 /// Handles input when viewing item details.
-fn handle_viewing_item_input(app: &mut App, key_event: KeyEvent) -> bool {
+fn handle_viewing_item_input(app: &mut App, key_event: KeyEvent) {
     match key_event.code {
         KeyCode::Esc => {
             // Go back to browsing navigate mode
@@ -218,11 +231,26 @@ fn handle_viewing_item_input(app: &mut App, key_event: KeyEvent) -> bool {
         KeyCode::Up => {
             app.select_previous_file();
         }
-        // TODO: Add Enter key handling to download/view selected file
-        // TODO: Add 'd' key handling to download selected file
+        KeyCode::Enter | KeyCode::Char('d') => {
+            // Download selected file
+            if app.settings.download_directory.is_none() {
+                // No download directory set, prompt the user
+                app.current_state = AppState::AskingDownloadDir;
+                app.collection_input.clear(); // Reuse input field for dir path
+                app.cursor_position = 0;
+                app.error_message = None; // Clear any previous errors
+                app.is_filtering_input = true; // Asking for dir implies filtering input
+            } else if let Some(file_details) = app.get_selected_file().cloned() { // Clone details
+                 if let Some(item_id) = app.viewing_item_id.clone() {
+                    app.pending_action = Some(UpdateAction::StartDownload(DownloadAction::File(item_id, file_details.clone())));
+                    app.download_status = Some(format!("Queueing download for file: {}", file_details.name));
+                 }
+            } else {
+                app.error_message = Some("Select a file to download first.".to_string());
+            }
+        }
         _ => {} // Ignore other keys for now
     }
-    false // Never triggers collection search API call
 }
 
 

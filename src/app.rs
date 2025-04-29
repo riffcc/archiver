@@ -1,8 +1,7 @@
-use crate::{
-    archive_api::{ArchiveDoc, FileDetails, ItemDetails}, // Import ItemDetails, FileDetails
-    settings::Settings,
-};
+use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
+use crate::settings::Settings;
 use ratatui::widgets::ListState;
+use std::path::PathBuf; // For constructing download paths
 use reqwest::Client;
 
 /// Represents the different states or modes the application can be in.
@@ -51,7 +50,33 @@ pub struct App {
     pub file_list_state: ListState,
     /// Flag indicating if item details are being loaded
     pub is_loading_details: bool,
+    /// Name of the collection currently being browsed (for download path)
+    pub current_collection_name: Option<String>,
+    /// Flag indicating if a download is in progress
+    pub is_downloading: bool,
+    /// Status message for the current or last download
+    pub download_status: Option<String>,
+    /// Action requested by the user to be performed in the main loop
+    pub pending_action: Option<UpdateAction>,
 }
+
+/// Actions that the main loop should perform based on user input.
+#[derive(Clone, Debug)]
+pub enum UpdateAction {
+    FetchCollection,
+    FetchItemDetails,
+    StartDownload(DownloadAction),
+}
+
+/// Specifies what to download.
+#[derive(Clone, Debug)]
+pub enum DownloadAction {
+    /// Download all files for a specific item.
+    Item(String), // identifier
+    /// Download a single specific file.
+    File(String, FileDetails), // identifier, file details
+}
+
 
 impl App {
     /// Constructs a new instance of [`App`].
@@ -73,6 +98,10 @@ impl App {
             current_item_details: None,
             file_list_state: ListState::default(),
             is_loading_details: false,
+            current_collection_name: None,
+            is_downloading: false,
+            download_status: None,
+            pending_action: None,
         }
     }
 
@@ -206,4 +235,41 @@ impl App {
             _ => None,
         }
     }
+
+    /// Constructs the full download path for a given file.
+    /// Returns None if download directory is not set or item details are missing.
+    pub fn get_download_path_for_file(&self, file: &FileDetails) -> Option<PathBuf> {
+        match (
+            self.settings.download_directory.as_ref(),
+            self.current_collection_name.as_ref(),
+            self.viewing_item_id.as_ref(), // Use viewing_item_id which should be set
+        ) {
+            (Some(base_dir), Some(collection), Some(item_id)) => {
+                let mut path = PathBuf::from(base_dir);
+                path.push(collection);
+                path.push(item_id);
+                path.push(&file.name);
+                Some(path)
+            }
+            _ => None, // Missing necessary info
+        }
+    }
+
+     /// Constructs the directory path for a given item.
+     /// Returns None if download directory is not set or collection/item ID is missing.
+     pub fn get_download_path_for_item(&self) -> Option<PathBuf> {
+         match (
+             self.settings.download_directory.as_ref(),
+             self.current_collection_name.as_ref(),
+             self.viewing_item_id.as_ref(), // Use viewing_item_id for item downloads too
+         ) {
+             (Some(base_dir), Some(collection), Some(item_id)) => {
+                 let mut path = PathBuf::from(base_dir);
+                 path.push(collection);
+                 path.push(item_id);
+                 Some(path)
+             }
+             _ => None, // Missing necessary info
+         }
+     }
 }
