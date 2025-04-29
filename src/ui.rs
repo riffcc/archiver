@@ -39,6 +39,7 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
     let (input_prompt, mut block_title) = match app.current_state {
          AppState::Browsing => ("> ", "Collection Name"),
          AppState::AskingDownloadDir => ("Enter Path: ", "Set Download Directory (Enter to save, Esc to cancel)"),
+         AppState::ViewingItem => ("", "Collection Filter"), // Input not active, show default title
          AppState::Downloading => ("> ", "Collection Name"), // Or maybe disable input?
      };
 

@@ -55,7 +55,11 @@ fn handle_browsing_input(app: &mut App, key_event: KeyEvent) -> bool {
 fn handle_browsing_input_filter_mode(app: &mut App, key_event: KeyEvent) -> bool {
     let mut trigger_api_call = false;
     match key_event.code {
-        // Input editing keys
+        // Esc is handled globally to exit filter mode
+        // Ignore navigation/action keys first
+        KeyCode::Up | KeyCode::Down | KeyCode::Char('d') | KeyCode::Char('i') => {}
+
+        // Then handle actual input editing keys
         KeyCode::Char(to_insert) => {
             app.enter_char(to_insert);
         }
@@ -76,10 +80,8 @@ fn handle_browsing_input_filter_mode(app: &mut App, key_event: KeyEvent) -> bool
             app.error_message = None; // Clear previous errors
             app.is_filtering_input = false; // Switch to navigate mode
         }
-        // Esc is handled globally to exit filter mode
-        // Ignore navigation/action keys while filtering
-        KeyCode::Up | KeyCode::Down | KeyCode::Char('d') | KeyCode::Char('i') => {}
-        _ => {} // Ignore other keys like Home, End, etc for now
+        // Ignore other keys not handled above
+        _ => {}
     }
     trigger_api_call
 }
