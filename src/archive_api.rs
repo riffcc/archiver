@@ -33,7 +33,7 @@ pub async fn fetch_collection_items(
     page: usize, // Page number (1-based)
 ) -> Result<Vec<ArchiveDoc>> {
     let query = format!("collection:{}", collection_name);
-    let start = (page - 1) * rows; // API uses 0-based start index
+    // let start = (page - 1) * rows; // API uses 0-based start index - This is unused as we use 'page' param
 
     let response = client
         .get(ARCHIVE_API_URL)
