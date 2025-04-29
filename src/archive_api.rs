@@ -57,8 +57,7 @@ pub struct MetadataDetails {
     // Use HashMap for other potential metadata fields we don't explicitly define
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
+    // Removed duplicate extra field below
 }
 
 /// Represents the value part of an entry in the 'files' map from the API response.
