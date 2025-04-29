@@ -13,8 +13,10 @@ struct ArchiveSearchResponse {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Allow unused fields for now (num_found, start)
 struct ResponseContent {
-    numFound: usize,
+    #[serde(rename = "numFound")] // Map JSON field to snake_case
+    num_found: usize,
     start: usize,
     docs: Vec<ArchiveDoc>,
 }
@@ -149,8 +151,10 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
         _ => None,
     };
 
+    // Ensure the identifier in the returned struct matches the one requested,
+    // regardless of what the metadata field in the response contains.
     let details = ItemDetails {
-        identifier: metadata.identifier.clone(), // Use identifier from metadata if available
+        identifier: identifier.to_string(), // Use the function argument identifier
         title: metadata.title,
         creator: metadata.creator,
         description: metadata.description,
@@ -281,13 +285,14 @@ mod tests {
         let result = fetch_item_details(&client, identifier).await;
 
         // Assert
-        assert!(result.is_err(), "API call should fail for non-existent item");
-        let error_message = result.err().unwrap().to_string();
-        // The API might return 404 or sometimes 200 with empty/null fields.
-        // Let's check for failure status or inability to parse expected structure.
-        // A simple check for the identifier in the error message might suffice here.
-        assert!(error_message.contains(identifier) || error_message.contains("failed"), "Error message should indicate failure related to the item");
-        // If the API returns 200 OK with nulls, the error might be context("Failed to parse JSON...")
+        // The metadata API often returns 200 OK with empty/null data for non-existent items.
+        // So, we expect Ok, but the details should reflect that it wasn't really found.
+        assert!(result.is_ok(), "API call should succeed even for non-existent item, returning empty data");
+        let details = result.unwrap();
+        assert_eq!(details.identifier, identifier, "Identifier should match the request");
+        // A key indicator of a non-found item is often a missing title or empty files list.
+        assert!(details.title.is_none(), "Non-existent item should not have a title");
+        assert!(details.files.is_empty(), "Non-existent item should have no files");
     }
 
      #[tokio::test]

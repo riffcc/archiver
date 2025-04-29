@@ -1,9 +1,9 @@
 use anyhow::Result;
 use rust_tui_app::{
-    app::{App, AppState}, // Import AppState
+    app::App, // AppState is not directly used here
     archive_api::{self, ArchiveDoc},
     event::{Event, EventHandler},
-    settings::{self, Settings}, // Import settings module
+    settings, // Settings struct is not directly used here
     tui::Tui,
     update::update,
 };
