@@ -202,10 +202,12 @@ fn render_metadata_pane(app: &App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    if let Some(_details) = &app.current_item_details { // Prefix details with _
+    // Use `if let Some(details) = ...` and then use `details` inside the block.
+    // The previous `_details` prefix was likely causing the warning.
+    if let Some(details) = &app.current_item_details {
         let mut lines = Vec::new(); // Changed to Vec<Line>
 
-        // Use app.current_item_details directly below where needed
+        // Use the `details` variable directly
         let details = app.current_item_details.as_ref().unwrap(); // Safe to unwrap due to if let
 
         lines.push(Line::from(vec![

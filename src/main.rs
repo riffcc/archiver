@@ -103,12 +103,13 @@ async fn main() -> Result<()> {
                                                     download_single_file(&client, &base_dir, &collection, &id, &file, status_tx_clone).await
                                                 }
                                             };
-                                            // Send final status (completion or error) - handled inside download functions
-                                            if let Err(e) = result {
-                                                 // Send error if download function itself failed before sending status
-                                                 // Use the cloned sender here too if needed, but download functions should handle final status
-                                                 let _ = status_tx_clone.send(format!("Download Task Error: {}", e)).await;
-                                            }
+                                            // Download functions handle sending final status/errors via the channel.
+                                            // We only need to handle potential errors from the task itself if needed,
+                                            // but the download functions returning Result covers most cases.
+                                            // Remove the redundant error send below:
+                                            // if let Err(e) = result {
+                                            //      let _ = status_tx_clone.send(format!("Download Task Error: {}", e)).await;
+                                            // }
                                         });
                                     } else {
                                          // Should be caught by update, but handle defensively
