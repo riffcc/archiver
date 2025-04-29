@@ -34,6 +34,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         AppState::SettingsView => {
             render_settings_view(app, frame, main_layout[1]);
         }
+        AppState::EditingSetting => {
+            // When editing, still render the settings view underneath
+            render_settings_view(app, frame, main_layout[1]);
+        }
     }
 
     render_status_bar(app, frame, main_layout[2]);
@@ -46,6 +50,7 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
          AppState::ViewingItem => ("", "Collection Filter"), // Input not active
          AppState::Downloading => ("> ", "Collection Name"), // Input not active
          AppState::SettingsView => ("", "Settings"), // Input not active in settings view
+         AppState::EditingSetting => ("Edit: ", "Editing Download Directory"), // Prompt for editing
      };
 
     // Modify title based on filtering mode only when Browsing or EditingSetting
@@ -213,12 +218,9 @@ fn render_metadata_pane(app: &App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    // Prefix `details` with `_` as it's not directly used after the `if let`.
-    if let Some(_details) = &app.current_item_details {
+    // Use `details` directly after binding it in `if let`.
+    if let Some(details) = &app.current_item_details {
         let mut lines = Vec::new(); // Changed to Vec<Line>
-
-        // Use app.current_item_details directly below where needed
-        let details = app.current_item_details.as_ref().unwrap(); // Safe to unwrap due to if let
 
         lines.push(Line::from(vec![
             Span::styled("Title: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -280,11 +282,8 @@ fn render_file_list_pane(app: &mut App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    // Prefix `details` with `_` as it's not directly used after the `if let`.
-    if let Some(_details) = &app.current_item_details {
-        // Use app.current_item_details directly below where needed
-        let details = app.current_item_details.as_ref().unwrap(); // Safe to unwrap due to if let
-
+    // Use `details` directly after binding it in `if let`.
+    if let Some(details) = &app.current_item_details {
         if details.files.is_empty() {
             let empty_msg = Paragraph::new("No files found for this item.")
                 .style(Style::default().fg(Color::DarkGray))
