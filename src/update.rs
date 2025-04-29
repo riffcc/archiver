@@ -1,6 +1,7 @@
-use crate::app::{App, AppState}; // Import AppState
-use crate::settings; // Import settings module
+use crate::app::{App, AppState};
+use crate::settings;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::widgets::ListState; // Import ListState
 
 /// Handle key events based on the current application state and input mode.
 /// Returns `true` if a collection search API call should be triggered.

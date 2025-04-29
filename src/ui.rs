@@ -1,10 +1,11 @@
 use crate::app::{App, AppState}; // Import AppState
+use crate::app::{App, AppState};
 use ratatui::{
-    prelude::{Alignment, Constraint, Direction, Frame, Layout, Rect, Text}, // Add Text
-    style::{Color, Modifier, Style, Stylize}, // Add Stylize
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap}, // Add Wrap
+    prelude::{Alignment, Constraint, Direction, Frame, Layout, Line, Rect, Span, Text}, // Add Line, Span
+    style::{Color, Modifier, Style}, // Remove Stylize
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
-use crate::archive_api::FileDetails; // Import FileDetails
+// Removed unused FileDetails import for now
 
 /// Renders the user interface widgets.
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -202,36 +203,57 @@ fn render_metadata_pane(app: &App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    if let Some(details) = &app.current_item_details {
-        let mut text_lines = Vec::new();
-        text_lines.push(Text::styled("Title: ", Style::default().add_modifier(Modifier::BOLD)));
-        text_lines.push(Text::raw(details.title.as_deref().unwrap_or("N/A")));
-        text_lines.push(Text::raw("")); // Spacer
+    if let Some(details) = &app.current_item_details { // Prefix details with _ if unused warning persists
+        let mut lines = Vec::new(); // Changed to Vec<Line>
 
-        text_lines.push(Text::styled("Creator: ", Style::default().add_modifier(Modifier::BOLD)));
-        text_lines.push(Text::raw(details.creator.as_deref().unwrap_or("N/A")));
-        text_lines.push(Text::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("Title: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(details.title.as_deref().unwrap_or("N/A")),
+        ]));
+        lines.push(Line::from("")); // Spacer
 
-        text_lines.push(Text::styled("Date: ", Style::default().add_modifier(Modifier::BOLD)));
-        text_lines.push(Text::raw(details.date.as_deref().unwrap_or("N/A")));
-        text_lines.push(Text::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("Creator: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(details.creator.as_deref().unwrap_or("N/A")),
+        ]));
+        lines.push(Line::from(""));
 
-        text_lines.push(Text::styled("Uploader: ", Style::default().add_modifier(Modifier::BOLD)));
-        text_lines.push(Text::raw(details.uploader.as_deref().unwrap_or("N/A")));
-        text_lines.push(Text::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("Date: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(details.date.as_deref().unwrap_or("N/A")),
+        ]));
+        lines.push(Line::from(""));
 
-        text_lines.push(Text::styled("Collections: ", Style::default().add_modifier(Modifier::BOLD)));
+        lines.push(Line::from(vec![
+            Span::styled("Uploader: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(details.uploader.as_deref().unwrap_or("N/A")),
+        ]));
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(Span::styled(
+            "Collections: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
         if details.collections.is_empty() {
-            text_lines.push(Text::raw("N/A"));
+            lines.push(Line::from("N/A"));
         } else {
-            text_lines.push(Text::raw(details.collections.join(", ")));
+            // Wrap collections manually if needed, or just join
+            lines.push(Line::from(details.collections.join(", ")));
         }
-        text_lines.push(Text::raw(""));
+        lines.push(Line::from(""));
 
-        text_lines.push(Text::styled("Description: ", Style::default().add_modifier(Modifier::BOLD)));
-        text_lines.push(Text::raw(details.description.as_deref().unwrap_or("N/A")));
+        lines.push(Line::from(Span::styled(
+            "Description: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        // Handle potential multi-line description
+        let description = details.description.as_deref().unwrap_or("N/A");
+        for desc_line in description.lines() {
+             lines.push(Line::from(desc_line));
+        }
 
-        let paragraph = Paragraph::new(text_lines)
+
+        let paragraph = Paragraph::new(lines) // Pass Vec<Line>
             .wrap(Wrap { trim: true }); // Wrap long lines
 
         frame.render_widget(paragraph, inner_area);
