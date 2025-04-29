@@ -96,7 +96,7 @@ fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
     let list_title = if app.is_filtering_input && app.current_state == AppState::Browsing {
         "Items (Press Esc to navigate)"
     } else if app.current_state == AppState::Browsing {
-         "Items ('i' to filter, Enter to view, 'd' to download, Up/Down to navigate)"
+         "Items ('i': Filter, 's': Settings, Enter: View, 'd': Download Item, 'b': Download All, ↑/↓: Nav)" // Updated title
     } else {
          "Items" // Default title if not browsing
     };
@@ -370,16 +370,16 @@ fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
     } else if app.current_state == AppState::AskingDownloadDir {
         "Enter the full path for downloads. Esc to cancel."
     } else if app.current_state == AppState::ViewingItem {
-        "Viewing item details. Esc: Back, ↑/↓: Files, Enter/d: Download File"
+        "Viewing item details. Esc: Back, ↑/↓: Files, Enter/d: Download File, 'b': Download All Files" // Added 'b'
     } else if app.current_state == AppState::SettingsView {
-         "Settings. Esc: Save & Back, ↑/↓: Select, Enter: Edit Dir, ←/→: Adjust Concurrency" // Updated hint
+         "Settings. Esc: Save & Back, ↑/↓: Select, Enter: Edit Dir, ←/→: Adjust Concurrency"
     } else if app.current_state == AppState::EditingSetting {
          "Editing Download Directory. Enter: Save, Esc: Cancel" // Hint for editing setting
     }
      else if app.is_filtering_input {
         "Filtering Input. Press Esc to navigate list, Enter to search."
     } else {
-        "Navigating List. Press 'q' to quit, 'i' to filter, Enter to view, 'd' to download item." // Updated hint
+        "Navigating List. 'q': Quit, 'i': Filter, 's': Settings, Enter: View, 'd': Download Item, 'b': Download All" // Added 's' and 'b'
     };
 
     let status_style = if app.error_message.is_some() || app.download_status.as_deref().unwrap_or("").contains("Error") {

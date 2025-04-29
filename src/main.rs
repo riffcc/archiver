@@ -114,11 +114,14 @@ async fn main() -> Result<()> {
 
                                             // Now we have a permit, proceed with the download
                                             let result = match download_action {
-                                                DownloadAction::Item(id) => {
+                                                DownloadAction::ItemAllFiles(id) => { // Renamed from Item
                                                     download_item(&client_clone, &base_dir_clone, &collection_clone, &id, status_tx_clone.clone()).await
                                                 }
                                                 DownloadAction::File(id, file) => {
                                                     download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, status_tx_clone.clone()).await
+                                                }
+                                                DownloadAction::Collection => {
+                                                     download_collection(&client_clone, &base_dir_clone, &collection_clone, status_tx_clone.clone(), Arc::clone(&semaphore_clone)).await
                                                 }
                                             };
 
@@ -321,4 +324,71 @@ async fn download_item(
      let _ = status_tx.send(final_status).await;
 
      Ok(())
+}
+
+/// Downloads all items listed for the current collection.
+async fn download_collection(
+    client: &Client,
+    base_dir: &str,
+    collection: &str,
+    status_tx: mpsc::Sender<String>,
+    semaphore: Arc<Semaphore>, // Pass semaphore for sub-tasks
+) -> Result<()> {
+    let _ = status_tx.send(format!("Fetching all identifiers for collection: {}", collection)).await;
+
+    // --- Fetch ALL identifiers ---
+    // This requires a modified fetch function or pagination loop.
+    // Placeholder: Assume we have a function that returns Vec<String>
+    let all_identifiers = archive_api::fetch_all_collection_identifiers(client, collection).await?;
+    // --- End Placeholder ---
+
+    if all_identifiers.is_empty() {
+        let _ = status_tx.send(format!("No items found to download for collection: {}", collection)).await;
+        return Ok(());
+    }
+
+    let total_items = all_identifiers.len();
+    let _ = status_tx.send(format!("Queueing download for {} items in collection: {}", total_items, collection)).await;
+
+    let mut join_handles = vec![];
+
+    for (index, item_id) in all_identifiers.into_iter().enumerate() {
+        // Clone necessary data for the item download task
+        let client_clone = client.clone();
+        let base_dir_clone = base_dir.to_string(); // Clone String
+        let collection_clone = collection.to_string(); // Clone String
+        let status_tx_clone = status_tx.clone();
+        let semaphore_clone = Arc::clone(&semaphore);
+        let item_id_clone = item_id.clone(); // Clone identifier
+
+        let handle = tokio::spawn(async move {
+            // Acquire permit for this specific item download task
+            let permit = match semaphore_clone.acquire().await {
+                 Ok(p) => p,
+                 Err(_) => {
+                     let _ = status_tx_clone.send(format!("Error: Semaphore closed for item {}", item_id_clone)).await;
+                     return; // Exit this task
+                 }
+            };
+
+            let _ = status_tx_clone.send(format!("[Item {}/{}] Starting download: {}", index + 1, total_items, item_id_clone)).await;
+            // Call download_item (which handles its own files)
+            if let Err(e) = download_item(&client_clone, &base_dir_clone, &collection_clone, &item_id_clone, status_tx_clone.clone()).await {
+                 let _ = status_tx_clone.send(format!("[Item {}/{}] Failed: {} - Error: {}", index + 1, total_items, item_id_clone, e)).await;
+            }
+             // Permit dropped automatically when task scope ends
+             drop(permit);
+        });
+        join_handles.push(handle);
+    }
+
+    // Wait for all spawned item download tasks to complete (optional, but good practice)
+    for handle in join_handles {
+        let _ = handle.await; // Ignore result here, status is sent via channel
+    }
+
+    let final_status = format!("Completed bulk download attempt for collection: {}", collection);
+    let _ = status_tx.send(final_status).await;
+
+    Ok(())
 }

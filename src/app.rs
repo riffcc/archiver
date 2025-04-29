@@ -81,10 +81,12 @@ pub enum UpdateAction {
 /// Specifies what to download.
 #[derive(Clone, Debug)]
 pub enum DownloadAction {
-    /// Download all files for a specific item.
-    Item(String), // identifier
-    /// Download a single specific file.
+    /// Download all files for a specific item (used by 'd' in item list or 'b' in file list).
+    ItemAllFiles(String), // identifier
+    /// Download a single specific file (used by Enter/'d' in file list).
     File(String, FileDetails), // identifier, file details
+    /// Download all items currently listed in the collection browser.
+    Collection,
 }
 
 

@@ -131,7 +131,7 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) {
             }
         }
         // Download trigger
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') => { // Download selected item
             if app.list_state.selected().is_some() { // Only if an item is selected
                 if app.settings.download_directory.is_none() {
                     // No download directory set, prompt the user
@@ -143,7 +143,7 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) {
                 } else if let Some(selected_index) = app.list_state.selected() {
                     // Directory is set, trigger download for the selected item
                     if let Some(item) = app.items.get(selected_index) {
-                         app.pending_action = Some(UpdateAction::StartDownload(DownloadAction::Item(item.identifier.clone())));
+                         app.pending_action = Some(UpdateAction::StartDownload(DownloadAction::ItemAllFiles(item.identifier.clone()))); // Use ItemAllFiles
                          app.download_status = Some(format!("Queueing download for item: {}", item.identifier));
                          // Main loop will set is_downloading = true when task starts
                     }
@@ -154,8 +154,24 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) {
                  app.error_message = Some("Select an item to download first.".to_string()); // Should not happen if list_state has selection
             }
         }
+         KeyCode::Char('b') => { // Bulk download current collection list
+             if app.settings.download_directory.is_none() {
+                 // No download directory set, prompt the user
+                 app.current_state = AppState::AskingDownloadDir;
+                 app.collection_input.clear(); // Reuse input field for dir path
+                 app.cursor_position = 0;
+                 app.error_message = None; // Clear any previous errors
+                 app.is_filtering_input = true; // Asking for dir implies filtering input
+             } else if !app.items.is_empty() {
+                 // Directory is set, trigger download for the collection
+                 app.pending_action = Some(UpdateAction::StartDownload(DownloadAction::Collection));
+                 app.download_status = Some(format!("Queueing bulk download for collection: {}", app.current_collection_name.as_deref().unwrap_or("Unknown")));
+             } else {
+                 app.error_message = Some("No items listed to download.".to_string());
+             }
+         }
         // Ignore input filtering keys while navigating
-        KeyCode::Char(c) if c != 'i' && c != 'd' && c != 'q' && c != 's' => {} // Also ignore 's' here
+        KeyCode::Char(c) if c != 'i' && c != 'd' && c != 'q' && c != 's' && c != 'b' => {} // Also ignore 'b' here
         KeyCode::Backspace | KeyCode::Left | KeyCode::Right => {}
         // Enter settings view
         KeyCode::Char('s') => {
@@ -261,6 +277,23 @@ fn handle_viewing_item_input(app: &mut App, key_event: KeyEvent) {
                 app.error_message = Some("Select a file to download first.".to_string());
             }
         }
+         KeyCode::Char('b') => { // Download all files in the current item view
+             if app.settings.download_directory.is_none() {
+                 // No download directory set, prompt the user
+                 app.current_state = AppState::AskingDownloadDir;
+                 app.collection_input.clear(); // Reuse input field for dir path
+                 app.cursor_position = 0;
+                 app.error_message = None; // Clear any previous errors
+                 app.is_filtering_input = true; // Asking for dir implies filtering input
+             } else if let Some(item_id) = app.viewing_item_id.clone() {
+                 // Directory is set, trigger download for all files in this item
+                 app.pending_action = Some(UpdateAction::StartDownload(DownloadAction::ItemAllFiles(item_id.clone())));
+                 app.download_status = Some(format!("Queueing download for all files in item: {}", item_id));
+             } else {
+                 // Should not happen if we are in ViewingItem state, but handle defensively
+                 app.error_message = Some("Cannot determine item to download.".to_string());
+             }
+         }
         _ => {} // Ignore other keys for now
     }
 }

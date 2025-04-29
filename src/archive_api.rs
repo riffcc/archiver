@@ -273,6 +273,18 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
     Ok(details)
 }
 
+/// Placeholder function to fetch ALL item identifiers for a collection.
+/// NOTE: A real implementation needs pagination logic.
+pub async fn fetch_all_collection_identifiers(
+    client: &Client,
+    collection_name: &str,
+) -> Result<Vec<String>> {
+    // For now, just fetch the first page as a placeholder demonstration
+    let docs = fetch_collection_items(client, collection_name, 100, 1).await?; // Fetch up to 100
+    Ok(docs.into_iter().map(|doc| doc.identifier).collect())
+    // TODO: Implement proper pagination loop here based on 'numFound' and 'rows'/'start'
+}
+
 
 #[cfg(test)]
 mod tests {
