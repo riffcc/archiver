@@ -1,8 +1,7 @@
-use crate::app::{App, AppState}; // Import AppState
-use crate::app::{App, AppState};
+use crate::app::{App, AppState}; // Keep only one import line
 use ratatui::{
-    prelude::{Alignment, Constraint, Direction, Frame, Layout, Line, Rect, Span, Text}, // Add Line, Span
-    style::{Color, Modifier, Style}, // Remove Stylize
+    prelude::{Alignment, Constraint, Direction, Frame, Layout, Line, Rect, Span}, // Remove unused Text
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 // Removed unused FileDetails import for now
@@ -203,7 +202,7 @@ fn render_metadata_pane(app: &App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    if let Some(details) = &app.current_item_details { // Prefix details with _ if unused warning persists
+    if let Some(details) = &app.current_item_details { // Use details variable
         let mut lines = Vec::new(); // Changed to Vec<Line>
 
         lines.push(Line::from(vec![
