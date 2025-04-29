@@ -1,6 +1,6 @@
-use crate::app::App;
+use crate::app::{App, AppState}; // Import AppState
 use ratatui::{
-    prelude::{Constraint, Direction, Frame, Layout, Rect},
+    prelude::{Alignment, Constraint, Direction, Frame, Layout, Rect}, // Add Alignment
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
@@ -22,16 +22,31 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 }
 
 fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
-    let input = Paragraph::new(format!("> {}", app.collection_input))
-        .block(Block::default().borders(Borders::ALL).title("Collection Name"));
+    let (input_prompt, block_title) = match app.current_state {
+        AppState::Browsing => ("> ", "Collection Name"),
+        AppState::AskingDownloadDir => ("Enter Path: ", "Set Download Directory (Enter to save, Esc to cancel)"),
+        AppState::Downloading => ("> ", "Collection Name"), // Or maybe disable input?
+    };
+
+    let input_text = format!("{}{}", input_prompt, app.collection_input);
+    let input = Paragraph::new(input_text)
+        .block(Block::default().borders(Borders::ALL).title(block_title));
 
     frame.render_widget(input, area);
-    // Make the cursor visible and styled
-    frame.set_cursor_position((area.x + app.cursor_position as u16 + 3, area.y + 1));
+
+    // Only show cursor if we are expecting input
+    if app.current_state == AppState::Browsing || app.current_state == AppState::AskingDownloadDir {
+        // Make the cursor visible and styled
+        frame.set_cursor_position((
+            area.x + app.cursor_position as u16 + input_prompt.len() as u16,
+            area.y + 1,
+        ));
+    }
 }
 
+
 fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
-    let list_block = Block::default().borders(Borders::ALL).title("Items");
+    let list_block = Block::default().borders(Borders::ALL).title("Items ('d' to download selected)");
 
     if app.is_loading {
         let loading_paragraph = Paragraph::new("Loading...")
@@ -41,21 +56,33 @@ fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    if app.items.is_empty() && !app.collection_input.is_empty() && !app.is_loading {
-        let empty_msg = if let Some(err) = &app.error_message {
-             format!("Error fetching items: {}", err)
-        } else if !app.collection_input.is_empty() {
-            "No items found for this collection, or press Enter to search.".to_string()
-        } else {
-            "Enter a collection name above and press Enter.".to_string()
-        };
+     // Handle empty list message specifically for Browsing state
+     if app.current_state == AppState::Browsing && app.items.is_empty() && !app.is_loading {
+         let empty_msg = if let Some(err) = &app.error_message {
+             // Don't show fetch error if we are not actively showing results for the input
+             if !app.collection_input.is_empty() {
+                 format!("Error fetching items: {}", err)
+             } else {
+                  "Enter a collection name above and press Enter.".to_string()
+             }
+         } else if !app.collection_input.is_empty() {
+             "No items found for this collection. Press Enter to search.".to_string()
+         } else {
+             "Enter a collection name above and press Enter.".to_string()
+         };
 
-        let empty_paragraph = Paragraph::new(empty_msg)
-            .block(list_block)
-            .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(empty_paragraph, area);
-        return;
-    }
+         let empty_paragraph = Paragraph::new(empty_msg)
+             .block(list_block.clone()) // Clone block for styling
+             .style(Style::default().fg(Color::DarkGray))
+             .alignment(Alignment::Center);
+         frame.render_widget(empty_paragraph, area);
+         return;
+     } else if app.current_state != AppState::Browsing {
+         // Don't show the item list if not in browsing state
+         // Render the block border anyway
+         frame.render_widget(list_block, area);
+         return;
+     }
 
 
     let list_items: Vec<ListItem> = app
@@ -83,8 +110,11 @@ fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
         err.as_str()
     } else if app.is_loading {
         "Fetching data..."
-    } else {
-        "Ready. Press 'q' to quit."
+    } else if app.current_state == AppState::AskingDownloadDir {
+        "Enter the full path for downloads."
+    }
+     else {
+        "Ready. Press 'q' to quit, 'd' to download."
     };
 
     let status_style = if app.error_message.is_some() {

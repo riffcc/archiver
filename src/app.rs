@@ -1,9 +1,25 @@
-use crate::archive_api::ArchiveDoc;
+use crate::{archive_api::ArchiveDoc, settings::Settings}; // Add Settings import
 use ratatui::widgets::ListState;
 use reqwest::Client;
 
+/// Represents the different states or modes the application can be in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppState {
+    /// Normal operation: browsing collections and items.
+    Browsing,
+    /// Prompting the user to enter the download directory.
+    AskingDownloadDir,
+    /// Currently downloading an item (future state).
+    Downloading, // Placeholder for later
+}
+
+
 /// Application state
 pub struct App {
+    /// Current application state/mode.
+    pub current_state: AppState,
+    /// Loaded application settings.
+    pub settings: Settings,
     /// Is the application running?
     pub running: bool,
     /// Current value of the input box
@@ -34,7 +50,17 @@ impl App {
             client: Client::new(),
             error_message: None,
             is_loading: false,
+            // Initialize with default state and settings (will be loaded properly in main)
+            current_state: AppState::Browsing,
+            settings: Settings::default(),
         }
+    }
+
+    /// Load settings into the App state.
+    pub fn load_settings(&mut self, settings: Settings) {
+        self.settings = settings;
+        // If download dir is not set, maybe transition state immediately?
+        // Or handle this transition based on user action (like pressing 'd').
     }
 
     /// Handles the tick event of the terminal.

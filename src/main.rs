@@ -1,22 +1,30 @@
 use anyhow::Result;
 use rust_tui_app::{
-    app::App,
-    archive_api::{self, ArchiveDoc}, // Import archive_api and ArchiveDoc
-    event::{Event, EventHandler},    // Import Event enum
+    app::{App, AppState}, // Import AppState
+    archive_api::{self, ArchiveDoc},
+    event::{Event, EventHandler},
+    settings::{self, Settings}, // Import settings module
     tui::Tui,
     update::update,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
-use tokio::sync::mpsc; // Import mpsc
+use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Create an application.
+    // Load settings first.
+    let settings = settings::load_settings()?;
+
+    // Create an application and load settings into it.
     let mut app = App::new();
+    app.load_settings(settings);
 
     // Create a channel for API results
     let (api_result_tx, mut api_result_rx) = mpsc::channel::<Result<Vec<ArchiveDoc>>>(1);
+
+    // Create a channel for download status updates (placeholder for now)
+    // let (download_status_tx, mut download_status_rx) = mpsc::channel::<String>(1);
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(io::stderr());
