@@ -5,7 +5,7 @@ use std::{fs, path::PathBuf};
 
 const QUALIFIER: &str = "com";
 const ORGANIZATION: &str = "Unknown"; // Consider changing this
-const APPLICATION: &str = "ArchiverTui"; // Your app's name
+pub const APPLICATION: &str = "ArchiverTui"; // Your app's name - Made public
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct Settings {

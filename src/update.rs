@@ -23,8 +23,31 @@ fn handle_browsing_input(app: &mut App, key_event: KeyEvent) -> bool {
             app.quit()
         }
 
-        // Collection Input field handling
+        // Download trigger (Check specific chars before general char input)
+        KeyCode::Char('d') => {
+            if app.list_state.selected().is_some() { // Only if an item is selected
+                if app.settings.download_directory.is_none() {
+                    // No download directory set, prompt the user
+                    app.current_state = AppState::AskingDownloadDir;
+                    app.collection_input.clear(); // Reuse input field for dir path
+                    app.cursor_position = 0;
+                    app.error_message = None; // Clear any previous errors
+                } else {
+                    // Directory is set, trigger download (logic to be added later)
+                    println!("Download triggered for selected item!"); // Placeholder
+                    // TODO: Set state to Downloading and trigger async download task
+                    app.error_message = Some("Download started (placeholder)...".to_string()); // Temp feedback
+                }
+            } else {
+                 app.error_message = Some("Select an item to download first.".to_string());
+            }
+        }
+
+        // General Collection Input field handling (must come after specific char checks)
         KeyCode::Char(to_insert) => {
+             // Prevent input if 'd' was handled above or other specific chars are added
+             // This check might be redundant if the match guards handle it, but explicit for clarity.
+             // If we add more specific KeyCode::Char('x') handlers, they should go above this arm.
             app.enter_char(to_insert);
         }
         KeyCode::Backspace => {
@@ -52,28 +75,8 @@ fn handle_browsing_input(app: &mut App, key_event: KeyEvent) -> bool {
             app.select_previous_item();
         }
 
-        // Download trigger
-        KeyCode::Char('d') => {
-            if app.list_state.selected().is_some() { // Only if an item is selected
-                if app.settings.download_directory.is_none() {
-                    // No download directory set, prompt the user
-                    app.current_state = AppState::AskingDownloadDir;
-                    app.collection_input.clear(); // Reuse input field for dir path
-                    app.cursor_position = 0;
-                    app.error_message = None; // Clear any previous errors
-                } else {
-                    // Directory is set, trigger download (logic to be added later)
-                    println!("Download triggered for selected item!"); // Placeholder
-                    // TODO: Set state to Downloading and trigger async download task
-                    app.error_message = Some("Download started (placeholder)...".to_string()); // Temp feedback
-                }
-            } else {
-                 app.error_message = Some("Select an item to download first.".to_string());
-            }
-        }
-
-
-        _ => {} // Ignore other keys
+        // Other keys are ignored in this state
+        _ => {}
     };
     trigger_api_call
 }
@@ -131,7 +134,8 @@ fn handle_asking_download_dir_input(app: &mut App, key_event: KeyEvent) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{app::App, settings::Settings}; // Import Settings
+    // Settings struct itself is not directly used here, only functions from settings module
+    use crate::app::App;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::{env, fs}; // For test setup
     use tempfile::tempdir; // For test setup

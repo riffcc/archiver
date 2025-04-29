@@ -15,6 +15,11 @@ serde_json = "1.0.120"
 anyhow = "1.0.86"
 config = { version = "0.14.0", features = ["toml"] }
 directories = "5.0.1"
+toml = "0.8.13" # Added for settings serialization
+
+
+[dev-dependencies]
+tempfile = "3.10.1" # Added for tests needing temp dirs
 
 
 [lib]
