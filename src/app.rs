@@ -62,6 +62,18 @@ pub struct App {
     pub download_status: Option<String>,
     /// Action requested by the user to be performed in the main loop
     pub pending_action: Option<UpdateAction>,
+
+    // --- Download Progress State ---
+    /// Total items to download in the current bulk operation (if applicable)
+    pub total_items_to_download: Option<usize>,
+    /// Number of items completed in the current bulk operation
+    pub items_downloaded_count: usize,
+    /// Total files to download across all items (estimated, updates as details are fetched)
+    pub total_files_to_download: Option<usize>,
+     /// Number of files completed in the current bulk operation
+    pub files_downloaded_count: usize,
+
+    // --- Settings State ---
     /// State for the settings list widget
     pub settings_list_state: ListState,
     /// Index of the currently selected setting (for editing)
@@ -89,6 +101,25 @@ pub enum DownloadAction {
     Collection,
 }
 
+/// Represents progress updates sent from download tasks.
+#[derive(Debug, Clone)]
+pub enum DownloadProgress {
+    /// Started processing an item.
+    ItemStarted(String),
+    /// Determined the number of files for an item.
+    ItemFileCount(usize),
+    /// A single file download completed successfully.
+    FileCompleted(String), // filename
+    /// An item download finished (successfully or with partial failure).
+    ItemCompleted(String, bool), // identifier, success (true if all files OK)
+    /// The entire collection download attempt finished.
+    CollectionCompleted(usize, usize), // total items attempted, total items failed
+    /// An error occurred during download.
+    Error(String),
+    /// A general status message.
+    Status(String),
+}
+
 
 impl App {
     /// Constructs a new instance of [`App`].
@@ -114,6 +145,10 @@ impl App {
             is_downloading: false,
             download_status: None,
             pending_action: None,
+            total_items_to_download: None,
+            items_downloaded_count: 0,
+            total_files_to_download: None,
+            files_downloaded_count: 0,
             settings_list_state: ListState::default(),
             selected_setting_index: 0, // Start with the first setting selected
             editing_setting_input: String::new(),

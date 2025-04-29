@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Context, Result}; // Add anyhow macro and Context trait
+use anyhow::{anyhow, Context, Result};
 use rust_tui_app::{
-    app::{App, DownloadAction, UpdateAction}, // Remove AppState, Add actions
+    app::{App, DownloadAction, DownloadProgress, UpdateAction}, // Add DownloadProgress
     archive_api::{self, ArchiveDoc, ItemDetails},
     event::{Event, EventHandler},
     settings,
@@ -25,8 +25,8 @@ async fn main() -> Result<()> {
     let (collection_api_tx, mut collection_api_rx) = mpsc::channel::<Result<Vec<ArchiveDoc>>>(1);
     // Create a channel for item details API results
     let (item_details_tx, mut item_details_rx) = mpsc::channel::<Result<ItemDetails>>(1);
-    // Create a channel for download status updates
-    let (download_status_tx, mut download_status_rx) = mpsc::channel::<String>(10);
+    // Create a channel for download progress updates
+    let (download_progress_tx, mut download_progress_rx) = mpsc::channel::<DownloadProgress>(50); // Increased buffer
 
     // --- Concurrency Limiter ---
     // Use Arc for shared ownership across tasks
@@ -92,13 +92,19 @@ async fn main() -> Result<()> {
                                     } else if let Some(base_dir) = app.settings.download_directory.clone() {
                                         app.is_downloading = true;
                                         app.error_message = None; // Clear previous error
+                                        // Reset progress counters for new download operation
+                                        app.total_items_to_download = None;
+                                        app.items_downloaded_count = 0;
+                                        app.total_files_to_download = None;
+                                        app.files_downloaded_count = 0;
+
                                         // Clone necessary data for the task
                                         let client = app.client.clone();
                                         // Clone data needed *before* the permit acquisition task
                                         let client_clone = client.clone();
                                         let base_dir_clone = base_dir.clone();
                                         let collection_clone = app.current_collection_name.clone().unwrap_or_default();
-                                        let status_tx_clone = download_status_tx.clone();
+                                        let progress_tx_clone = download_progress_tx.clone(); // Use progress channel
                                         let semaphore_clone = Arc::clone(&semaphore); // Clone Arc pointer
 
                                         tokio::spawn(async move {
@@ -107,27 +113,27 @@ async fn main() -> Result<()> {
                                                  Ok(p) => p,
                                                  Err(_) => {
                                                      // Semaphore closed, unlikely but handle
-                                                     let _ = status_tx_clone.send("Error: Download semaphore closed.".to_string()).await;
+                                                     let _ = progress_tx_clone.send(DownloadProgress::Error("Download semaphore closed.".to_string())).await;
                                                      return;
                                                  }
                                             };
 
                                             // Now we have a permit, proceed with the download
                                             let result = match download_action {
-                                                DownloadAction::ItemAllFiles(id) => { // Renamed from Item
-                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, status_tx_clone.clone()).await
+                                                DownloadAction::ItemAllFiles(id) => {
+                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, progress_tx_clone.clone()).await
                                                 }
                                                 DownloadAction::File(id, file) => {
-                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, status_tx_clone.clone()).await
+                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, progress_tx_clone.clone()).await
                                                 }
                                                 DownloadAction::Collection => {
-                                                     download_collection(&client_clone, &base_dir_clone, &collection_clone, status_tx_clone.clone(), Arc::clone(&semaphore_clone)).await
+                                                     download_collection(&client_clone, &base_dir_clone, &collection_clone, progress_tx_clone.clone(), Arc::clone(&semaphore_clone)).await
                                                 }
                                             };
 
-                                            // Handle potential errors from the download functions themselves
+                                            // Send error if the top-level task function itself failed (e.g., fetching identifiers)
                                             if let Err(e) = result {
-                                                 let _ = status_tx_clone.send(format!("Download Task Error: {}", e)).await;
+                                                 let _ = progress_tx_clone.send(DownloadProgress::Error(format!("Download Task Error: {}", e))).await;
                                             }
 
                                             // Permit is automatically dropped here when the task finishes, releasing the semaphore slot
@@ -192,7 +198,38 @@ async fn main() -> Result<()> {
                  if status.starts_with("Completed download") || status.starts_with("Download Error:") || status.starts_with("No files found") {
                      app.is_downloading = false;
                  }
-                 app.download_status = Some(status);
+                 // Update App state based on progress message
+                 match status {
+                     DownloadProgress::ItemStarted(id) => {
+                         app.download_status = Some(format!("Starting: {}", id));
+                     }
+                     DownloadProgress::ItemFileCount(count) => {
+                         app.total_files_to_download = Some(app.total_files_to_download.unwrap_or(0) + count);
+                         app.download_status = Some(format!("Found {} files...", count)); // Update status briefly
+                     }
+                     DownloadProgress::FileCompleted(filename) => {
+                         app.files_downloaded_count += 1;
+                         app.download_status = Some(format!("Done: {}", filename)); // Update status briefly
+                     }
+                     DownloadProgress::ItemCompleted(id, success) => {
+                         app.items_downloaded_count += 1;
+                         let status_prefix = if success { "Completed item" } else { "Finished item (with errors)" };
+                         app.download_status = Some(format!("{}: {}", status_prefix, id));
+                     }
+                     DownloadProgress::CollectionCompleted(total, failed) => {
+                         app.is_downloading = false; // Collection finished
+                         app.download_status = Some(format!("Collection download finished. Items: {} attempted, {} failed.", total, failed));
+                     }
+                     DownloadProgress::Error(msg) => {
+                         app.is_downloading = false; // Stop on major error
+                         app.error_message = Some(msg.clone()); // Show as main error
+                         app.download_status = Some(format!("Error: {}", msg));
+                     }
+                      DownloadProgress::Status(msg) => {
+                         // General status update
+                         app.download_status = Some(msg);
+                     }
+                 }
             }
         }
     }
@@ -218,7 +255,7 @@ async fn download_single_file(
     collection: &str,
     item_id: &str,
     file_details: &archive_api::FileDetails,
-    status_tx: mpsc::Sender<String>,
+    progress_tx: mpsc::Sender<DownloadProgress>, // Changed type
 ) -> Result<()> {
     let file_path = Path::new(base_dir).join(collection).join(item_id).join(&file_details.name);
     let download_url = format!(
@@ -229,7 +266,8 @@ async fn download_single_file(
         file_details.name
     );
 
-    let _ = status_tx.send(format!("Checking: {}", file_details.name)).await;
+    // Send status via progress channel
+    // let _ = progress_tx.send(DownloadProgress::Status(format!("Checking: {}", file_details.name))).await;
 
     // Ensure target directory exists
     if let Some(parent_dir) = file_path.parent() {
@@ -243,25 +281,28 @@ async fn download_single_file(
     if let Some(expected) = expected_size {
         if let Ok(metadata) = fs::metadata(&file_path).await {
             if metadata.is_file() && metadata.len() == expected {
-                let _ = status_tx.send(format!("Skipping (exists): {}", file_details.name)).await;
+                // Send FileCompleted immediately if skipped
+                let _ = progress_tx.send(DownloadProgress::FileCompleted(file_details.name.clone())).await;
+                // Also send a status message for clarity
+                let _ = progress_tx.send(DownloadProgress::Status(format!("Skipping (exists): {}", file_details.name))).await;
                 return Ok(()); // File exists and size matches, skip download
             }
         }
         // If metadata check fails or size mismatch, continue to download
     } else {
          // If expected size is unknown, download anyway (or log a warning?)
-         let _ = status_tx.send(format!("Warning: Unknown size for {}, downloading anyway", file_details.name)).await;
+         let _ = progress_tx.send(DownloadProgress::Status(format!("Warning: Unknown size for {}, downloading anyway", file_details.name))).await;
     }
     // --- End Idempotency Check ---
 
-     let _ = status_tx.send(format!("Downloading: {}", file_details.name)).await;
+     let _ = progress_tx.send(DownloadProgress::Status(format!("Downloading: {}", file_details.name))).await;
 
     // Make the request
     let response = client.get(&download_url).send().await.context("Failed to send download request")?;
 
     if !response.status().is_success() {
         let err_msg = format!("Download failed for {}: Status {}", file_details.name, response.status());
-         let _ = status_tx.send(err_msg.clone()).await;
+         let _ = progress_tx.send(DownloadProgress::Error(err_msg.clone())).await; // Send error via progress channel
         return Err(anyhow!(err_msg));
     }
 
@@ -274,7 +315,8 @@ async fn download_single_file(
         dest.write_all(&chunk).await.context("Failed to write chunk to file")?;
     }
 
-    let _ = status_tx.send(format!("Completed download: {}", file_details.name)).await;
+    // Send completion via progress channel
+    let _ = progress_tx.send(DownloadProgress::FileCompleted(file_details.name.clone())).await;
     Ok(())
 }
 
@@ -284,46 +326,43 @@ async fn download_item(
     base_dir: &str,
     collection: &str,
     item_id: &str,
-    status_tx: mpsc::Sender<String>,
+    progress_tx: mpsc::Sender<DownloadProgress>, // Changed type
 ) -> Result<()> {
-     let _ = status_tx.send(format!("Fetching details for item: {}", item_id)).await;
+     let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
      // Fetch item details first to get the file list
      let details = archive_api::fetch_item_details(client, item_id).await?;
 
+     let total_files = details.files.len();
+     let _ = progress_tx.send(DownloadProgress::ItemFileCount(total_files)).await;
+
+
      if details.files.is_empty() {
-         let _ = status_tx.send(format!("No files found to download for item: {}", item_id)).await;
+         let _ = progress_tx.send(DownloadProgress::Status(format!("No files found for item: {}", item_id))).await;
+         let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), true)).await; // Mark as completed (successfully, with 0 files)
          return Ok(()); // Not an error, just nothing to do
      }
 
-     let total_files = details.files.len();
-     let _ = status_tx.send(format!("Starting download for {} files in item: {}", total_files, item_id)).await;
+     let _ = progress_tx.send(DownloadProgress::Status(format!("Starting download for {} files in item: {}", total_files, item_id))).await;
 
      let item_dir = Path::new(base_dir).join(collection).join(item_id);
      fs::create_dir_all(&item_dir).await.context("Failed to create item directory")?;
 
      let mut success_count = 0;
-     let mut fail_count = 0;
+     let mut item_failed = false;
 
-     for (index, file) in details.files.iter().enumerate() {
-         let _ = status_tx.send(format!("[{}/{}] Downloading: {}", index + 1, total_files, file.name)).await;
-         // Reuse single file download logic
-         match download_single_file(client, base_dir, collection, item_id, file, status_tx.clone()).await {
-              Ok(_) => success_count += 1,
-              Err(e) => {
-                  fail_count += 1;
-                  // Send specific file error, but continue with others
-                  let _ = status_tx.send(format!("Error downloading {}: {}", file.name, e)).await;
-              }
+     for file in details.files.iter() {
+         // download_single_file now sends FileCompleted or Error messages
+         if let Err(e) = download_single_file(client, base_dir, collection, item_id, file, progress_tx.clone()).await {
+              item_failed = true;
+              // Error message already sent by download_single_file
+              let _ = progress_tx.send(DownloadProgress::Status(format!("Continuing item {} after error on file {}: {}", item_id, file.name, e))).await;
          }
      }
 
-     let final_status = format!(
-         "Completed download for item: {}. Success: {}, Failed: {}",
-         item_id, success_count, fail_count
-     );
-     let _ = status_tx.send(final_status).await;
+     // Send item completion status
+     let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), !item_failed)).await;
 
-     Ok(())
+     Ok(()) // Return Ok even if some files failed, ItemCompleted indicates success/failure
 }
 
 /// Downloads all items listed for the current collection.
@@ -331,64 +370,70 @@ async fn download_collection(
     client: &Client,
     base_dir: &str,
     collection: &str,
-    status_tx: mpsc::Sender<String>,
+    progress_tx: mpsc::Sender<DownloadProgress>, // Changed type
     semaphore: Arc<Semaphore>, // Pass semaphore for sub-tasks
 ) -> Result<()> {
-    let _ = status_tx.send(format!("Fetching all identifiers for collection: {}", collection)).await;
+    let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers for: {}", collection))).await;
 
     // --- Fetch ALL identifiers ---
     // This requires a modified fetch function or pagination loop.
     // Placeholder: Assume we have a function that returns Vec<String>
-    let all_identifiers = archive_api::fetch_all_collection_identifiers(client, collection).await?;
+    let all_identifiers = archive_api::fetch_all_collection_identifiers(client, collection).await
+        .context("Failed to fetch collection identifiers")?;
     // --- End Placeholder ---
 
     if all_identifiers.is_empty() {
-        let _ = status_tx.send(format!("No items found to download for collection: {}", collection)).await;
+        let _ = progress_tx.send(DownloadProgress::Status(format!("No items found for: {}", collection))).await;
+        let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await; // Send completion for 0 items
         return Ok(());
     }
 
     let total_items = all_identifiers.len();
-    let _ = status_tx.send(format!("Queueing download for {} items in collection: {}", total_items, collection)).await;
+    let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} items for: {}", total_items, collection))).await;
 
     let mut join_handles = vec![];
+    let mut total_failed_items = 0; // Track failed items
 
     for (index, item_id) in all_identifiers.into_iter().enumerate() {
         // Clone necessary data for the item download task
         let client_clone = client.clone();
-        let base_dir_clone = base_dir.to_string(); // Clone String
-        let collection_clone = collection.to_string(); // Clone String
-        let status_tx_clone = status_tx.clone();
+        let base_dir_clone = base_dir.to_string();
+        let collection_clone = collection.to_string();
+        let progress_tx_clone = progress_tx.clone(); // Clone progress sender
         let semaphore_clone = Arc::clone(&semaphore);
-        let item_id_clone = item_id.clone(); // Clone identifier
+        let item_id_clone = item_id.clone();
 
         let handle = tokio::spawn(async move {
             // Acquire permit for this specific item download task
             let permit = match semaphore_clone.acquire().await {
                  Ok(p) => p,
                  Err(_) => {
-                     let _ = status_tx_clone.send(format!("Error: Semaphore closed for item {}", item_id_clone)).await;
-                     return; // Exit this task
+                     let _ = progress_tx_clone.send(DownloadProgress::Error(format!("Semaphore closed for item {}", item_id_clone))).await;
+                     return Err(anyhow!("Semaphore closed")); // Return error from task
                  }
             };
 
-            let _ = status_tx_clone.send(format!("[Item {}/{}] Starting download: {}", index + 1, total_items, item_id_clone)).await;
-            // Call download_item (which handles its own files)
-            if let Err(e) = download_item(&client_clone, &base_dir_clone, &collection_clone, &item_id_clone, status_tx_clone.clone()).await {
-                 let _ = status_tx_clone.send(format!("[Item {}/{}] Failed: {} - Error: {}", index + 1, total_items, item_id_clone, e)).await;
-            }
+            // download_item now sends its own progress, including ItemCompleted which indicates success/failure
+            let item_result = download_item(&client_clone, &base_dir_clone, &collection_clone, &item_id_clone, progress_tx_clone.clone()).await;
+
              // Permit dropped automatically when task scope ends
              drop(permit);
+             item_result // Return the result of the item download
         });
         join_handles.push(handle);
     }
 
-    // Wait for all spawned item download tasks to complete (optional, but good practice)
+    // Wait for all spawned item download tasks to complete and count failures
     for handle in join_handles {
-        let _ = handle.await; // Ignore result here, status is sent via channel
+        match handle.await {
+            Ok(Ok(_)) => { /* Item download task succeeded */ }
+            Ok(Err(_)) => { total_failed_items += 1; } // Item download function returned error
+            Err(_) => { total_failed_items += 1; } // Task itself panicked or was cancelled
+        }
     }
 
-    let final_status = format!("Completed bulk download attempt for collection: {}", collection);
-    let _ = status_tx.send(final_status).await;
+    // Send final collection completion status
+    let _ = progress_tx.send(DownloadProgress::CollectionCompleted(total_items, total_failed_items)).await;
 
     Ok(())
 }

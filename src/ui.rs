@@ -365,8 +365,20 @@ fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
 
 
 fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
-    let status_text = if let Some(status) = &app.download_status {
-        status.as_str() // Show download status first if available
+    let status_text = if app.is_downloading {
+        // Format progress string if downloading
+        let item_progress = app.total_items_to_download.map_or("?".to_string(), |t| t.to_string());
+        let file_progress = app.total_files_to_download.map_or("?".to_string(), |t| t.to_string());
+        format!(
+            "Downloading [Items: {}/{} | Files: {}/{}] Last: {}",
+            app.items_downloaded_count,
+            item_progress,
+            app.files_downloaded_count,
+            file_progress,
+            app.download_status.as_deref().unwrap_or("...") // Show last status message
+        )
+    } else if let Some(status) = &app.download_status {
+        status.as_str() // Show final download status if not downloading but status exists
     } else if let Some(err) = &app.error_message {
         err.as_str()
     } else if app.is_loading {
@@ -388,12 +400,13 @@ fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
         "Navigating List. 'q': Quit, 'i': Filter, 's': Settings, Enter: View, 'd': Download Item, 'b': Download All" // Added 's' and 'b'
     };
 
-    let status_style = if app.error_message.is_some() || app.download_status.as_deref().unwrap_or("").contains("Error") {
+    let status_style = if app.error_message.is_some() || app.download_status.as_deref().unwrap_or("").contains("Error") || app.download_status.as_deref().unwrap_or("").contains("Failed") {
         Style::default().fg(Color::Red)
-    } else if app.is_downloading || app.download_status.is_some() {
-         Style::default().fg(Color::Yellow) // Indicate ongoing or completed download
-    }
-     else {
+    } else if app.is_downloading {
+         Style::default().fg(Color::Yellow) // Indicate ongoing download
+    } else if app.download_status.is_some() {
+         Style::default().fg(Color::Green) // Indicate completed download (if no error)
+    } else {
         Style::default()
     };
 
