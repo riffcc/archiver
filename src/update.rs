@@ -131,12 +131,33 @@ fn handle_asking_download_dir_input(app: &mut App, key_event: KeyEvent) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, AppState}; // Import AppState
+    use crate::{app::App, settings::Settings}; // Import Settings
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::{env, fs}; // For test setup
+    use tempfile::tempdir; // For test setup
+
+    // Helper for setting up test environment with mock config
+    fn setup_test_app_with_config() -> (App, tempfile::TempDir) {
+        let temp_dir = tempdir().unwrap();
+        let mock_home = temp_dir.path().to_path_buf();
+        env::set_var("HOME", mock_home.to_str().unwrap()); // Mock HOME for ProjectDirs
+
+        // Ensure the config dir exists for saving settings later if needed
+        let config_dir = temp_dir.path().join(".config").join(crate::settings::APPLICATION);
+        fs::create_dir_all(&config_dir).unwrap();
+
+
+        let mut app = App::new();
+        // Ensure settings are loaded (or defaults used) based on the mocked env
+        app.settings = crate::settings::load_settings().unwrap();
+        (app, temp_dir)
+    }
+
 
     #[test]
-    fn test_update_enter_key_triggers_api_call_and_resets_state() {
-        let mut app = App::new();
+    fn test_update_enter_key_triggers_api_call_and_resets_state_in_browsing() {
+        let (mut app, _temp_dir) = setup_test_app_with_config();
+        app.current_state = AppState::Browsing; // Ensure correct state
         // Simulate some existing state
         app.collection_input = "test_collection".to_string();
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
@@ -228,8 +249,9 @@ mod tests {
     }
 
      #[test]
-    fn test_update_input_handling() {
-        let mut app = App::new();
+    fn test_update_input_handling_in_browsing() {
+        let (mut app, _temp_dir) = setup_test_app_with_config();
+        app.current_state = AppState::Browsing;
 
         // Enter 'a'
         update(&mut app, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
