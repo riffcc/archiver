@@ -22,7 +22,9 @@ async fn main() -> Result<()> {
         // Handle events.
         match tui.events.next().await? {
             rust_tui_app::event::Event::Tick => app.tick(),
-            rust_tui_app::event::Event::Key(key_event) => update(&mut app, key_event),
+            rust_tui_app::event::Event::Key(key_event) => {
+                update(&mut app, key_event);
+            },
             rust_tui_app::event::Event::Mouse(_) => {}
             rust_tui_app::event::Event::Resize(_, _) => {}
         }
