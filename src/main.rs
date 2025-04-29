@@ -89,22 +89,25 @@ async fn main() -> Result<()> {
                                         app.error_message = None; // Clear previous error
                                         // Clone necessary data for the task
                                         let client = app.client.clone();
-                                        let status_tx = download_status_tx.clone();
+                                        // Clone the sender *inside* the task to avoid moving the original
+                                        let status_tx_clone = download_status_tx.clone();
                                         let collection = app.current_collection_name.clone().unwrap_or_default(); // Use default if somehow unset
 
                                         tokio::spawn(async move {
+                                            // Use the cloned sender inside the task
                                             let result = match download_action {
                                                 DownloadAction::Item(id) => { // Use direct name
-                                                    download_item(&client, &base_dir, &collection, &id, status_tx).await
+                                                    download_item(&client, &base_dir, &collection, &id, status_tx_clone).await
                                                 }
                                                 DownloadAction::File(id, file) => { // Use direct name
-                                                    download_single_file(&client, &base_dir, &collection, &id, &file, status_tx).await
+                                                    download_single_file(&client, &base_dir, &collection, &id, &file, status_tx_clone).await
                                                 }
                                             };
                                             // Send final status (completion or error) - handled inside download functions
                                             if let Err(e) = result {
                                                  // Send error if download function itself failed before sending status
-                                                 let _ = download_status_tx.send(format!("Download Error: {}", e)).await;
+                                                 // Use the cloned sender here too if needed, but download functions should handle final status
+                                                 let _ = status_tx_clone.send(format!("Download Task Error: {}", e)).await;
                                             }
                                         });
                                     } else {
