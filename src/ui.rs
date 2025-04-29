@@ -93,8 +93,8 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
 
 
 fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
-    let list_title = if app.is_filtering_input && app.current_state == AppState::Browsing {
-        "Items (Press Esc to navigate)".to_string() // Convert literal to String
+    let list_title: String = if app.is_filtering_input && app.current_state == AppState::Browsing {
+        "Items (Press Esc to navigate)".to_string()
     } else if app.current_state == AppState::Browsing {
         let count_str = app.total_items_found.map_or("?".to_string(), |t| t.to_string());
         let shown_count = app.items.len(); // Assuming only one page shown for now
@@ -103,7 +103,7 @@ fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
             shown_count, count_str
         )
     } else {
-         "Items".to_string() // Convert literal to String
+         "Items".to_string()
     };
 
     let border_style = if !app.is_filtering_input && app.current_state == AppState::Browsing {
