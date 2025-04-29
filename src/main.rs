@@ -1,12 +1,22 @@
 use anyhow::Result;
-use rust_tui_app::{app::App, event::EventHandler, tui::Tui, update::update};
+use rust_tui_app::{
+    app::App,
+    archive_api::{self, ArchiveDoc}, // Import archive_api and ArchiveDoc
+    event::{Event, EventHandler},    // Import Event enum
+    tui::Tui,
+    update::update,
+};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use tokio::sync::mpsc; // Import mpsc
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Create an application.
     let mut app = App::new();
+
+    // Create a channel for API results
+    let (api_result_tx, mut api_result_rx) = mpsc::channel::<Result<Vec<ArchiveDoc>>>(1);
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(io::stderr());
@@ -19,14 +29,55 @@ async fn main() -> Result<()> {
     while app.running {
         // Render the user interface.
         tui.draw(&mut app)?;
-        // Handle events.
-        match tui.events.next().await? {
-            rust_tui_app::event::Event::Tick => app.tick(),
-            rust_tui_app::event::Event::Key(key_event) => {
-                update(&mut app, key_event);
-            },
-            rust_tui_app::event::Event::Mouse(_) => {}
-            rust_tui_app::event::Event::Resize(_, _) => {}
+        // Handle events using tokio::select!
+        tokio::select! {
+            // Handle terminal events
+            event = tui.events.next() => {
+                match event? {
+                    Event::Tick => app.tick(),
+                    Event::Key(key_event) => {
+                        if update(&mut app, key_event) {
+                            // Trigger API call if update returns true
+                            app.is_loading = true; // Set loading state
+                            app.items.clear(); // Clear previous items
+                            app.error_message = None; // Clear previous error
+
+                            let client = app.client.clone();
+                            let collection_name = app.collection_input.clone();
+                            let tx = api_result_tx.clone();
+
+                            tokio::spawn(async move {
+                                // Fetch items (e.g., first 50 on page 1)
+                                let result = archive_api::fetch_collection_items(&client, &collection_name, 50, 1).await;
+                                // Send the result back to the main loop, ignore error if receiver dropped
+                                let _ = tx.send(result).await;
+                            });
+                        }
+                    },
+                    Event::Mouse(_) => {}
+                    Event::Resize(_, _) => {}
+                }
+            }
+            // Handle API results
+            Some(result) = api_result_rx.recv() => {
+                app.is_loading = false; // Reset loading state
+                match result {
+                    Ok(items) => {
+                        app.items = items;
+                        if !app.items.is_empty() {
+                             app.list_state.select(Some(0)); // Select first item if list is not empty
+                        } else {
+                             app.list_state.select(None); // Deselect if list is empty
+                        }
+                        app.error_message = None; // Clear error on success
+                    }
+                    Err(e) => {
+                        app.items.clear(); // Clear items on error
+                        app.list_state.select(None); // Deselect on error
+                        app.error_message = Some(format!("Error fetching data: {}", e));
+                    }
+                }
+            }
         }
     }
 
