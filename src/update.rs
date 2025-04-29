@@ -47,6 +47,7 @@ pub fn update(app: &mut App, key_event: KeyEvent) -> Option<UpdateAction> {
         AppState::AskingDownloadDir => handle_asking_download_dir_input(app, key_event), // This state implies filtering
         AppState::ViewingItem => handle_viewing_item_input(app, key_event),
         AppState::SettingsView => handle_settings_view_input(app, key_event),
+        AppState::EditingSetting => handle_editing_setting_input(app, key_event),
         AppState::Downloading => {} // Ignore input during download for now
     }
     // Return the pending action, if any was set
@@ -308,7 +309,87 @@ fn handle_settings_view_input(app: &mut App, key_event: KeyEvent) {
             }
              // TODO: Add handling for editing download dir
         }
-        // TODO: Add Enter key to potentially switch to editing mode for download dir
+        KeyCode::Enter => {
+            // Enter edit mode only for Download Directory (index 0) for now
+            if app.selected_setting_index == 0 {
+                app.current_state = AppState::EditingSetting;
+                // Pre-fill input with current value or empty string
+                app.editing_setting_input = app.settings.download_directory.clone().unwrap_or_default();
+                app.cursor_position = app.editing_setting_input.len(); // Move cursor to end
+                app.is_filtering_input = true; // Enable input mode
+                app.error_message = None; // Clear any previous errors
+            }
+            // Potentially handle Enter for other settings later if needed
+        }
+        _ => {} // Ignore other keys
+    }
+}
+
+/// Handles input when actively editing a setting value.
+fn handle_editing_setting_input(app: &mut App, key_event: KeyEvent) {
+     match key_event.code {
+        KeyCode::Esc => {
+            // Cancel editing, revert to SettingsView
+            app.current_state = AppState::SettingsView;
+            app.editing_setting_input.clear();
+            app.is_filtering_input = false;
+            app.error_message = None;
+        }
+        KeyCode::Char(to_insert) => {
+            // Use similar logic to other input fields, but on editing_setting_input
+            app.editing_setting_input.insert(app.cursor_position, to_insert);
+            // Need to adapt cursor movement logic or add it to App for this field
+            let new_pos = app.cursor_position.saturating_add(1);
+            app.cursor_position = new_pos.clamp(0, app.editing_setting_input.len());
+
+        }
+        KeyCode::Backspace => {
+             let is_not_cursor_leftmost = app.cursor_position != 0;
+             if is_not_cursor_leftmost {
+                 let current_index = app.cursor_position;
+                 let from_left_to_current_index = current_index - 1;
+                 let before_char_to_delete = app.editing_setting_input.chars().take(from_left_to_current_index);
+                 let after_char_to_delete = app.editing_setting_input.chars().skip(current_index);
+                 app.editing_setting_input = before_char_to_delete.chain(after_char_to_delete).collect();
+                 // Need to adapt cursor movement logic
+                 let new_pos = app.cursor_position.saturating_sub(1);
+                 app.cursor_position = new_pos.clamp(0, app.editing_setting_input.len());
+             }
+        }
+        KeyCode::Left => {
+             let new_pos = app.cursor_position.saturating_sub(1);
+             app.cursor_position = new_pos.clamp(0, app.editing_setting_input.len());
+        }
+        KeyCode::Right => {
+             let new_pos = app.cursor_position.saturating_add(1);
+             app.cursor_position = new_pos.clamp(0, app.editing_setting_input.len());
+        }
+        KeyCode::Enter => {
+            // Save the edited value back to the actual setting
+            let edited_value = app.editing_setting_input.trim().to_string();
+
+            if app.selected_setting_index == 0 { // Download Directory
+                if edited_value.is_empty() {
+                    app.settings.download_directory = None; // Set to None if empty
+                } else {
+                    app.settings.download_directory = Some(edited_value);
+                }
+            }
+            // Add cases for other editable settings here if needed
+
+            // Attempt to save settings to file
+            if let Err(e) = settings::save_settings(&app.settings) {
+                 app.error_message = Some(format!("Failed to save settings: {}", e));
+                 // Optionally revert the change in app.settings here if save fails
+            } else {
+                 app.error_message = Some("Setting saved.".to_string());
+            }
+
+            // Revert state regardless of save success/failure
+            app.current_state = AppState::SettingsView;
+            app.editing_setting_input.clear();
+            app.is_filtering_input = false;
+        }
         _ => {} // Ignore other keys
     }
 }

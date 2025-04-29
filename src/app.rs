@@ -17,6 +17,8 @@ pub enum AppState {
     Downloading, // Placeholder for later
     /// Viewing/editing application settings.
     SettingsView,
+    /// Actively editing a specific setting value.
+    EditingSetting,
 }
 
 
@@ -64,6 +66,8 @@ pub struct App {
     pub settings_list_state: ListState,
     /// Index of the currently selected setting (for editing)
     pub selected_setting_index: usize,
+    /// Temporary buffer for editing a setting value
+    pub editing_setting_input: String,
 }
 
 /// Actions that the main loop should perform based on user input.
@@ -110,6 +114,7 @@ impl App {
             pending_action: None,
             settings_list_state: ListState::default(),
             selected_setting_index: 0, // Start with the first setting selected
+            editing_setting_input: String::new(),
         }
     }
 

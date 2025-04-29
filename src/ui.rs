@@ -48,9 +48,9 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
          AppState::SettingsView => ("", "Settings"), // Input not active in settings view
      };
 
-    // Modify title based on filtering mode only when Browsing
-    let border_style = if app.is_filtering_input && app.current_state == AppState::Browsing {
-        block_title = "Collection Filter (Filtering)";
+    // Modify title based on filtering mode only when Browsing or EditingSetting
+    let border_style = if app.is_filtering_input && (app.current_state == AppState::Browsing || app.current_state == AppState::EditingSetting) {
+        block_title = "Collection Filter (Filtering)"; // Keep this title for now, maybe change later for settings edit
         Style::default().fg(Color::Yellow) // Highlight border when filtering
     } else if app.current_state == AppState::AskingDownloadDir {
          Style::default().fg(Color::Yellow) // Also highlight when asking for dir
@@ -71,9 +71,16 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_widget(input, area);
 
     // Only show cursor if we are actively filtering input in a relevant state
-    if app.is_filtering_input && (app.current_state == AppState::Browsing || app.current_state == AppState::AskingDownloadDir) {
+    if app.is_filtering_input && (app.current_state == AppState::Browsing || app.current_state == AppState::AskingDownloadDir || app.current_state == AppState::EditingSetting) {
+         // Adjust cursor position based on which input field is active
+         let text_to_measure = match app.current_state {
+             AppState::EditingSetting => &app.editing_setting_input,
+             _ => &app.collection_input, // Browsing or AskingDownloadDir
+         };
+         let current_cursor_pos = app.cursor_position.clamp(0, text_to_measure.len());
+
         frame.set_cursor_position((
-            area.x + app.cursor_position as u16 + input_prompt.len() as u16, // Adjust for prompt length
+            area.x + current_cursor_pos as u16 + input_prompt.len() as u16, // Adjust for prompt length
             area.y + 1, // Inside the border
         ));
     }
@@ -319,11 +326,16 @@ fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
     let inner_area = settings_block.inner(area);
     frame.render_widget(settings_block, area);
 
-    // Define settings items
-    let download_dir_text = format!(
-        "Download Directory: {}",
-        app.settings.download_directory.as_deref().unwrap_or("Not Set")
-    );
+    // Define settings items, showing edit buffer if active
+    let download_dir_text = if app.current_state == AppState::EditingSetting && app.selected_setting_index == 0 {
+         format!("Download Directory: {}", app.editing_setting_input)
+    } else {
+         format!(
+            "Download Directory: {}",
+            app.settings.download_directory.as_deref().unwrap_or("Not Set")
+        )
+    };
+
     let concurrency_text = format!(
         "Max Concurrent Downloads: {} {}",
         app.settings.max_concurrent_downloads.map_or("Unlimited".to_string(), |n| n.to_string()),
@@ -361,7 +373,9 @@ fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
     } else if app.current_state == AppState::ViewingItem {
         "Viewing item details. Esc: Back, ↑/↓: Files, Enter/d: Download File"
     } else if app.current_state == AppState::SettingsView {
-         "Editing Settings. Esc: Save & Back, ↑/↓: Select, ←/→: Adjust Concurrency" // Hint for settings
+         "Settings. Esc: Save & Back, ↑/↓: Select, Enter: Edit Dir, ←/→: Adjust Concurrency" // Updated hint
+    } else if app.current_state == AppState::EditingSetting {
+         "Editing Download Directory. Enter: Save, Esc: Cancel" // Hint for editing setting
     }
      else if app.is_filtering_input {
         "Filtering Input. Press Esc to navigate list, Enter to search."
