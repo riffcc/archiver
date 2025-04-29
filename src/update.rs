@@ -158,7 +158,7 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) {
         // Esc and Quit keys are handled globally or by state handlers
         _ => {} // Ignore other keys
     }
-    false // Never trigger API call directly from navigate mode
+    // No return value needed here anymore
 }
 
 /// Handles input when prompting for the download directory.
