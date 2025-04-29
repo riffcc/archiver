@@ -9,6 +9,8 @@ pub enum AppState {
     Browsing,
     /// Prompting the user to enter the download directory.
     AskingDownloadDir,
+    /// Viewing the details of a selected item.
+    ViewingItem,
     /// Currently downloading an item (future state).
     Downloading, // Placeholder for later
 }
@@ -36,8 +38,10 @@ pub struct App {
     pub error_message: Option<String>,
     /// Flag to indicate if we are currently fetching data
     pub is_loading: bool,
-    /// Flag to indicate if the user is currently editing the input field
-    pub is_editing_input: bool,
+    /// Flag to indicate if the user is currently filtering the collection input
+    pub is_filtering_input: bool,
+    /// Identifier of the item currently being viewed (if any)
+    pub viewing_item_id: Option<String>,
 }
 
 impl App {
@@ -55,7 +59,8 @@ impl App {
             // Initialize with default state and settings (will be loaded properly in main)
             current_state: AppState::Browsing,
             settings: Settings::default(),
-            is_editing_input: true, // Start in input editing mode
+            is_filtering_input: true, // Start in input filtering mode
+            viewing_item_id: None,
         }
     }
 
@@ -111,8 +116,9 @@ impl App {
         }
     }
 
+    /// Clamps the cursor position within the valid range of characters in the input string.
     fn clamp_cursor(&self, new_cursor_pos: usize) -> usize {
-        new_cursor_pos.clamp(0, self.collection_input.len())
+        new_cursor_pos.clamp(0, self.collection_input.chars().count()) // Use chars().count() instead of len() for correct char boundary clamping
     }
 
     pub fn select_next_item(&mut self) {

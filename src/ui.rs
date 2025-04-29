@@ -11,13 +11,27 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Input field
-            Constraint::Min(0),    // List of items
+            Constraint::Min(0),    // Main content area (List or Item View)
             Constraint::Length(1), // Status/Error message
         ])
         .split(frame.area());
 
     render_input(app, frame, main_layout[0]);
-    render_item_list(app, frame, main_layout[1]);
+
+    // Render either item list or item view based on state
+    match app.current_state {
+        AppState::Browsing | AppState::AskingDownloadDir => { // Show list when browsing or asking for dir
+            render_item_list(app, frame, main_layout[1]);
+        }
+        AppState::ViewingItem => {
+            render_item_view(app, frame, main_layout[1]);
+        }
+        AppState::Downloading => {
+             // Potentially show download progress here later
+             render_item_list(app, frame, main_layout[1]); // Show list for now
+        }
+    }
+
     render_status_bar(app, frame, main_layout[2]);
 }
 
@@ -28,10 +42,10 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
          AppState::Downloading => ("> ", "Collection Name"), // Or maybe disable input?
      };
 
-    // Modify title based on editing mode only when Browsing
-    let border_style = if app.is_editing_input && app.current_state == AppState::Browsing {
-        block_title = "Collection Name (Editing)";
-        Style::default().fg(Color::Yellow) // Highlight border when editing
+    // Modify title based on filtering mode only when Browsing
+    let border_style = if app.is_filtering_input && app.current_state == AppState::Browsing {
+        block_title = "Collection Filter (Filtering)";
+        Style::default().fg(Color::Yellow) // Highlight border when filtering
     } else if app.current_state == AppState::AskingDownloadDir {
          Style::default().fg(Color::Yellow) // Also highlight when asking for dir
     }
@@ -50,29 +64,29 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(input, area);
 
-    // Only show cursor if we are actively editing input in a relevant state
-    if app.is_editing_input && (app.current_state == AppState::Browsing || app.current_state == AppState::AskingDownloadDir) {
+    // Only show cursor if we are actively filtering input in a relevant state
+    if app.is_filtering_input && (app.current_state == AppState::Browsing || app.current_state == AppState::AskingDownloadDir) {
         frame.set_cursor_position((
-            area.x + app.cursor_position as u16 + input_prompt.len() as u16, // Adjust for prompt
-            area.y + 1,
+            area.x + app.cursor_position as u16 + input_prompt.len() as u16, // Adjust for prompt length
+            area.y + 1, // Inside the border
         ));
     }
 }
 
 
 fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
-    let list_title = if app.is_editing_input && app.current_state == AppState::Browsing {
+    let list_title = if app.is_filtering_input && app.current_state == AppState::Browsing {
         "Items (Press Esc to navigate)"
     } else if app.current_state == AppState::Browsing {
-         "Items ('i'/'Enter' to edit, 'd' to download, Up/Down to navigate)"
+         "Items ('i' to filter, Enter to view, 'd' to download, Up/Down to navigate)"
     } else {
-         "Items" // Don't show items list when asking for dir etc.
+         "Items" // Default title if not browsing
     };
 
-    let border_style = if !app.is_editing_input && app.current_state == AppState::Browsing {
+    let border_style = if !app.is_filtering_input && app.current_state == AppState::Browsing {
         Style::default().fg(Color::Yellow) // Highlight border when navigating list
     } else {
-        Style::default()
+        Style::default() // Default border style otherwise
     };
 
     let list_block = Block::default()
@@ -136,6 +150,30 @@ fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
+/// Renders the item detail view (placeholder).
+fn render_item_view(app: &mut App, frame: &mut Frame, area: Rect) {
+    let item_id = app.viewing_item_id.as_deref().unwrap_or("Unknown Item"); // Get the ID
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!("Viewing Item: {} (Press Esc to go back)", item_id))
+        .border_style(Style::default().fg(Color::Cyan)); // Highlight view border
+
+    // TODO: Fetch and display actual metadata here later
+    let text = vec![
+        format!("Identifier: {}", item_id),
+        " ".into(),
+        "Metadata will be shown here.".into(),
+        "File list will be shown here.".into(),
+    ];
+
+    let paragraph = Paragraph::new(text.join("\n"))
+        .block(block)
+        .alignment(Alignment::Left); // Or Center
+
+    frame.render_widget(paragraph, area);
+}
+
 
 fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
     let status_text = if let Some(err) = &app.error_message {
@@ -144,10 +182,12 @@ fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
         "Fetching data..."
     } else if app.current_state == AppState::AskingDownloadDir {
         "Enter the full path for downloads. Esc to cancel."
-    } else if app.is_editing_input {
-        "Editing Input. Press Esc to navigate list, Enter to search."
+    } else if app.current_state == AppState::ViewingItem {
+        "Viewing item details. Press Esc to return to list."
+    } else if app.is_filtering_input {
+        "Filtering Input. Press Esc to navigate list, Enter to search."
     } else {
-        "Navigating List. Press 'q' to quit, 'i'/'Enter' to edit, 'd' to download."
+        "Navigating List. Press 'q' to quit, 'i' to filter, Enter to view, 'd' to download."
     };
 
     let status_style = if app.error_message.is_some() {

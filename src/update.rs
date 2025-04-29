@@ -15,16 +15,16 @@ pub fn update(app: &mut App, key_event: KeyEvent) -> bool {
             app.quit();
             return false;
         }
-        // Allow Esc to exit input mode if currently editing, otherwise quit
+        // Allow Esc to exit filter mode if currently filtering, otherwise quit (or handle state-specific Esc)
         KeyCode::Esc => {
-            if app.is_editing_input && app.current_state != AppState::AskingDownloadDir {
-                app.is_editing_input = false;
-                return false; // Don't quit yet, just exit input mode
-            } else if app.current_state == AppState::AskingDownloadDir {
-                 // Let the state handler manage Esc for AskingDownloadDir
+            if app.is_filtering_input && app.current_state == AppState::Browsing {
+                app.is_filtering_input = false;
+                return false; // Don't quit yet, just exit filter mode
+            } else if app.current_state == AppState::AskingDownloadDir || app.current_state == AppState::ViewingItem {
+                 // Let the state handlers manage Esc for these states
             }
              else {
-                // If not editing and not asking for dir, Esc quits
+                // If not filtering and not in a state with specific Esc handling, Esc quits
                 app.quit();
                 return false;
             }
@@ -35,23 +35,24 @@ pub fn update(app: &mut App, key_event: KeyEvent) -> bool {
 
     match app.current_state {
         AppState::Browsing => handle_browsing_input(app, key_event),
-        AppState::AskingDownloadDir => handle_asking_download_dir_input(app, key_event), // This state implies editing
+        AppState::AskingDownloadDir => handle_asking_download_dir_input(app, key_event), // This state implies filtering
+        AppState::ViewingItem => handle_viewing_item_input(app, key_event),
         AppState::Downloading => false, // Ignore input during download for now
     }
 }
 
 /// Handles input when in the main browsing state (`AppState::Browsing`).
-/// Dispatches to specific handlers based on whether the input field is being edited.
+/// Dispatches to specific handlers based on whether the input field is being filtered.
 fn handle_browsing_input(app: &mut App, key_event: KeyEvent) -> bool {
-    if app.is_editing_input {
-        handle_browsing_input_edit_mode(app, key_event)
+    if app.is_filtering_input {
+        handle_browsing_input_filter_mode(app, key_event)
     } else {
         handle_browsing_input_navigate_mode(app, key_event)
     }
 }
 
-/// Handles key events when editing the collection input field in Browsing state.
-fn handle_browsing_input_edit_mode(app: &mut App, key_event: KeyEvent) -> bool {
+/// Handles key events when filtering the collection input field in Browsing state.
+fn handle_browsing_input_filter_mode(app: &mut App, key_event: KeyEvent) -> bool {
     let mut trigger_api_call = false;
     match key_event.code {
         // Input editing keys
@@ -68,15 +69,15 @@ fn handle_browsing_input_edit_mode(app: &mut App, key_event: KeyEvent) -> bool {
             app.move_cursor_right();
         }
         KeyCode::Enter => {
-            // Submit search, trigger API call, exit input mode
+            // Submit search, trigger API call, exit filter mode
             trigger_api_call = true;
             app.items.clear(); // Clear old items
             app.list_state.select(None); // Reset selection
             app.error_message = None; // Clear previous errors
-            app.is_editing_input = false; // Switch to navigate mode
+            app.is_filtering_input = false; // Switch to navigate mode
         }
-        // Esc is handled globally to exit input mode
-        // Ignore navigation/action keys while editing
+        // Esc is handled globally to exit filter mode
+        // Ignore navigation/action keys while filtering
         KeyCode::Up | KeyCode::Down | KeyCode::Char('d') | KeyCode::Char('i') => {}
         _ => {} // Ignore other keys like Home, End, etc for now
     }
@@ -93,9 +94,23 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) -> bo
         KeyCode::Up => {
             app.select_previous_item();
         }
-        // Enter edit mode
-        KeyCode::Char('i') | KeyCode::Enter => { // Allow Enter to also start editing
-            app.is_editing_input = true;
+        // Enter filter mode
+        KeyCode::Char('i') => {
+            app.is_filtering_input = true;
+        }
+        // View selected item or enter filter mode if none selected
+        KeyCode::Enter => {
+            if let Some(selected_index) = app.list_state.selected() {
+                 if let Some(item) = app.items.get(selected_index) {
+                    app.viewing_item_id = Some(item.identifier.clone());
+                    app.current_state = AppState::ViewingItem;
+                    app.is_filtering_input = false; // Ensure not filtering when viewing
+                    app.error_message = None; // Clear any previous message
+                 }
+            } else {
+                // If no item is selected, Enter goes to filter mode
+                app.is_filtering_input = true;
+            }
         }
         // Download trigger
         KeyCode::Char('d') => {
@@ -106,10 +121,10 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) -> bo
                     app.collection_input.clear(); // Reuse input field for dir path
                     app.cursor_position = 0;
                     app.error_message = None; // Clear any previous errors
-                    app.is_editing_input = true; // Asking for dir implies editing
+                    app.is_filtering_input = true; // Asking for dir implies filtering input
                 } else {
                     // Directory is set, trigger download (logic to be added later)
-                    println!("Download triggered for selected item!"); // Placeholder
+                    println!("Download triggered for selected item: {}!", app.items[app.list_state.selected().unwrap()].identifier); // Placeholder
                     // TODO: Set state to Downloading and trigger async download task
                     app.error_message = Some("Download started (placeholder)...".to_string()); // Temp feedback
                 }
@@ -117,9 +132,10 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) -> bo
                  app.error_message = Some("Select an item to download first.".to_string());
             }
         }
-        // Ignore input editing keys while navigating
-        KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Left | KeyCode::Right => {}
-        // Esc and Quit keys are handled globally
+        // Ignore input filtering keys while navigating
+        KeyCode::Char(c) if c != 'i' && c != 'd' && c != 'q' => {} // Ignore other chars not handled above
+        KeyCode::Backspace | KeyCode::Left | KeyCode::Right => {}
+        // Esc and Quit keys are handled globally or by state handlers
         _ => {} // Ignore other keys
     }
     false // Never trigger API call directly from navigate mode
@@ -134,10 +150,10 @@ fn handle_asking_download_dir_input(app: &mut App, key_event: KeyEvent) -> bool 
             app.collection_input.clear(); // Clear the potentially partial path
             app.cursor_position = 0;
             app.error_message = None;
-            app.is_editing_input = false; // Ensure we return to navigate mode
+            app.is_filtering_input = false; // Ensure we return to navigate mode
         }
         KeyCode::Char(to_insert) => {
-            // Use the same input logic as collection input (this state implies editing)
+            // Use the same input logic as collection input (this state implies filtering)
             app.enter_char(to_insert);
         }
         KeyCode::Backspace => {
@@ -166,7 +182,7 @@ fn handle_asking_download_dir_input(app: &mut App, key_event: KeyEvent) -> bool 
                     app.current_state = AppState::Browsing; // Return to browsing
                     app.collection_input.clear(); // Clear the path from input
                     app.cursor_position = 0;
-                    app.is_editing_input = false; // Ensure we return to navigate mode
+                    app.is_filtering_input = false; // Ensure we return to navigate mode
                 }
             } else {
                 app.error_message = Some("Download directory cannot be empty. Press Esc to cancel.".to_string());
@@ -176,6 +192,22 @@ fn handle_asking_download_dir_input(app: &mut App, key_event: KeyEvent) -> bool 
         _ => {} // Ignore other keys
     }
     false // Never trigger collection search from this state
+}
+
+/// Handles input when viewing item details.
+fn handle_viewing_item_input(app: &mut App, key_event: KeyEvent) -> bool {
+    match key_event.code {
+        KeyCode::Esc => {
+            // Go back to browsing navigate mode
+            app.current_state = AppState::Browsing;
+            app.viewing_item_id = None; // Clear the viewed item ID
+            app.is_filtering_input = false; // Ensure back in navigate mode
+            app.error_message = None;
+        }
+        // Add other keys for item view later (e.g., scroll, download files)
+        _ => {}
+    }
+    false // Never triggers API call
 }
 
 
@@ -207,10 +239,10 @@ mod tests {
 
 
     #[test]
-    fn test_update_enter_key_triggers_api_call_and_exits_edit_mode_in_browsing() {
+    fn test_update_enter_key_triggers_api_call_and_exits_filter_mode_in_browsing() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = true; // Start in edit mode
+        app.is_filtering_input = true; // Start in filter mode
         // Simulate some existing state
         app.collection_input = "test_collection".to_string();
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
@@ -228,20 +260,39 @@ mod tests {
         assert!(app.list_state.selected().is_none(), "List selection should be reset");
         assert!(app.error_message.is_none(), "Error message should be cleared");
         assert_eq!(app.current_state, AppState::Browsing, "State should remain Browsing");
-        assert!(!app.is_editing_input, "Should exit input editing mode");
+        assert!(!app.is_filtering_input, "Should exit input filtering mode");
     }
 
      #[test]
-    fn test_update_enter_key_enters_edit_mode_when_navigating_in_browsing() {
+    fn test_update_enter_key_enters_filter_mode_when_navigating_and_no_item_selected() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = false; // Start in navigate mode
+        app.is_filtering_input = false; // Start in navigate mode
+        app.list_state.select(None); // Ensure nothing selected
 
         let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let should_trigger_api = update(&mut app, key_event);
 
-        assert!(!should_trigger_api, "Enter should not trigger API call when navigating");
-        assert!(app.is_editing_input, "Should enter input editing mode");
+        assert!(!should_trigger_api, "Enter should not trigger API call");
+        assert!(app.is_filtering_input, "Should enter input filtering mode");
+        assert_eq!(app.current_state, AppState::Browsing); // Should stay in browsing state
+    }
+
+     #[test]
+    fn test_update_enter_key_enters_viewing_mode_when_navigating_and_item_selected() {
+        let (mut app, _temp_dir) = setup_test_app_with_config();
+        app.current_state = AppState::Browsing;
+        app.is_filtering_input = false; // Start in navigate mode
+        app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
+        app.list_state.select(Some(0)); // Select the item
+
+        let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let should_trigger_api = update(&mut app, key_event);
+
+        assert!(!should_trigger_api, "Enter should not trigger API call");
+        assert!(!app.is_filtering_input, "Should not be filtering");
+        assert_eq!(app.current_state, AppState::ViewingItem, "Should enter ViewingItem state");
+        assert_eq!(app.viewing_item_id, Some("item1".to_string()));
     }
 
 
@@ -255,10 +306,10 @@ mod tests {
         update(&mut app, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(!app.running, "App should not be running after 'q'");
 
-        // Reset and test Esc (should quit if not editing)
+        // Reset and test Esc (should quit if not filtering)
         app.running = true;
         app.current_state = AppState::Browsing;
-        app.is_editing_input = false; // Ensure not editing
+        app.is_filtering_input = false; // Ensure not filtering
         update(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.running, "App should not be running after Esc when navigating");
 
@@ -280,21 +331,36 @@ mod tests {
         assert_eq!(app.current_state, AppState::Browsing, "State should revert to Browsing");
         assert!(app.collection_input.is_empty(), "Input should be cleared");
         assert!(app.error_message.is_none(), "Error message should be cleared");
-        assert!(!app.is_editing_input, "Should exit input editing mode");
+        assert!(!app.is_filtering_input, "Should exit input filtering mode");
     }
 
 
      #[test]
-    fn test_update_esc_exits_edit_mode_in_browsing() {
+    fn test_update_esc_exits_filter_mode_in_browsing() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = true; // Start editing
+        app.is_filtering_input = true; // Start filtering
 
         update(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert!(app.running, "App should still be running");
-        assert!(!app.is_editing_input, "Should exit input editing mode");
+        assert!(!app.is_filtering_input, "Should exit input filtering mode");
         assert_eq!(app.current_state, AppState::Browsing); // State remains Browsing
+    }
+
+     #[test]
+    fn test_update_esc_exits_viewing_item_mode() {
+        let (mut app, _temp_dir) = setup_test_app_with_config();
+        app.current_state = AppState::ViewingItem;
+        app.viewing_item_id = Some("item1".to_string());
+        app.is_filtering_input = false; // Should be false when viewing
+
+        update(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(app.running, "App should still be running");
+        assert_eq!(app.current_state, AppState::Browsing, "Should return to Browsing state");
+        assert!(!app.is_filtering_input, "Should be in navigate mode");
+        assert!(app.viewing_item_id.is_none(), "Viewing item ID should be cleared");
     }
 
 
@@ -302,7 +368,7 @@ mod tests {
     fn test_update_list_navigation_only_when_navigating_in_browsing() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = false; // Start in navigate mode
+        app.is_filtering_input = false; // Start in navigate mode
         app.items = vec![
             crate::archive_api::ArchiveDoc { identifier: "item1".to_string() },
             crate::archive_api::ArchiveDoc { identifier: "item2".to_string() },
@@ -332,21 +398,21 @@ mod tests {
         update(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.list_state.selected(), Some(0));
 
-        // Switch to edit mode and try navigating - should be ignored
-        app.is_editing_input = true;
+        // Switch to filter mode and try navigating - should be ignored
+        app.is_filtering_input = true;
         let initial_selection = app.list_state.selected();
         update(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.list_state.selected(), initial_selection, "Down key should be ignored when editing");
+        assert_eq!(app.list_state.selected(), initial_selection, "Down key should be ignored when filtering");
         update(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.list_state.selected(), initial_selection, "Up key should be ignored when editing");
+        assert_eq!(app.list_state.selected(), initial_selection, "Up key should be ignored when filtering");
 
     }
 
      #[test]
-    fn test_update_input_handling_only_when_editing_in_browsing() {
+    fn test_update_input_handling_only_when_filtering_in_browsing() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = true; // Start editing
+        app.is_filtering_input = true; // Start filtering
 
         // Enter 'a'
         update(&mut app, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
@@ -388,10 +454,10 @@ mod tests {
         assert_eq!(app.collection_input, "a"); // No change
         assert_eq!(app.cursor_position, 0);
         assert_eq!(app.current_state, AppState::Browsing); // State unchanged
-        assert!(app.is_editing_input, "Should still be editing");
+        assert!(app.is_filtering_input, "Should still be filtering");
 
         // Switch to navigate mode and try typing - should be ignored
-        app.is_editing_input = false;
+        app.is_filtering_input = false;
         let initial_input = app.collection_input.clone();
         let initial_cursor = app.cursor_position;
 
@@ -412,14 +478,14 @@ mod tests {
     }
 
      #[test]
-    fn test_update_i_key_enters_edit_mode_when_navigating_in_browsing() {
+    fn test_update_i_key_enters_filter_mode_when_navigating_in_browsing() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = false; // Start navigating
+        app.is_filtering_input = false; // Start navigating
 
         update(&mut app, KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
 
-        assert!(app.is_editing_input, "Should enter input editing mode");
+        assert!(app.is_filtering_input, "Should enter input filtering mode");
         assert_eq!(app.current_state, AppState::Browsing);
     }
 
@@ -428,7 +494,7 @@ mod tests {
     fn test_update_download_key_no_dir_set_changes_state_when_navigating() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = false; // Must be navigating
+        app.is_filtering_input = false; // Must be navigating
         app.settings.download_directory = None; // Ensure no dir is set
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
         app.list_state.select(Some(0)); // Select an item
@@ -440,14 +506,14 @@ mod tests {
         assert!(app.collection_input.is_empty(), "Input field should be cleared for new input");
         assert_eq!(app.cursor_position, 0);
         assert!(app.error_message.is_none());
-        assert!(app.is_editing_input, "Should switch to editing mode for AskingDownloadDir");
+        assert!(app.is_filtering_input, "Should switch to filtering mode for AskingDownloadDir");
     }
 
      #[test]
-    fn test_update_download_key_ignored_when_editing() {
+    fn test_update_download_key_ignored_when_filtering() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = true; // Editing mode
+        app.is_filtering_input = true; // Filtering mode
         app.settings.download_directory = None;
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
         app.list_state.select(Some(0));
@@ -456,7 +522,7 @@ mod tests {
 
         assert!(!should_trigger_api);
         assert_eq!(app.current_state, AppState::Browsing); // State should not change
-        assert!(app.is_editing_input); // Should remain editing
+        assert!(app.is_filtering_input); // Should remain filtering
     }
 
 
@@ -464,7 +530,7 @@ mod tests {
     fn test_update_download_key_no_item_selected_when_navigating() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = false; // Navigating mode
+        app.is_filtering_input = false; // Navigating mode
         app.settings.download_directory = Some("/tmp/test".to_string()); // Dir is set
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
         app.list_state.select(None); // No item selected
@@ -482,7 +548,7 @@ mod tests {
     fn test_update_download_key_dir_set_triggers_placeholder_when_navigating() {
         let (mut app, _temp_dir) = setup_test_app_with_config();
         app.current_state = AppState::Browsing;
-        app.is_editing_input = false; // Navigating mode
+        app.is_filtering_input = false; // Navigating mode
         app.settings.download_directory = Some("/tmp/test".to_string()); // Dir is set
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
         app.list_state.select(Some(0)); // Select an item
@@ -517,7 +583,7 @@ mod tests {
         assert_eq!(app.current_state, AppState::Browsing, "State should revert to Browsing after save");
         assert!(app.collection_input.is_empty(), "Input field should be cleared");
         assert_eq!(app.settings.download_directory, Some("/tmp".to_string()), "Download directory should be saved in app state");
-        assert!(!app.is_editing_input, "Should exit input editing mode after save");
+        assert!(!app.is_filtering_input, "Should exit input filtering mode after save");
         assert!(app.error_message.is_some());
         assert!(app.error_message.unwrap().contains("Download directory saved"));
 
