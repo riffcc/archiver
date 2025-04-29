@@ -31,6 +31,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
              // Potentially show download progress here later
              render_item_list(app, frame, main_layout[1]); // Show list for now
         }
+        AppState::SettingsView => {
+            render_settings_view(app, frame, main_layout[1]);
+        }
     }
 
     render_status_bar(app, frame, main_layout[2]);
@@ -300,6 +303,43 @@ fn render_file_list_pane(app: &mut App, frame: &mut Frame, area: Rect) {
 
         frame.render_stateful_widget(list, inner_area, &mut app.file_list_state);
     }
+}
+
+/// Renders the settings view.
+fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
+    let settings_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Settings (Esc: Save & Back, ↑/↓: Select, ←/→: Adjust)")
+        .border_style(Style::default().fg(Color::Magenta)); // Distinct border color
+
+    let inner_area = settings_block.inner(area);
+    frame.render_widget(settings_block, area);
+
+    // Define settings items
+    let download_dir_text = format!(
+        "Download Directory: {}",
+        app.settings.download_directory.as_deref().unwrap_or("Not Set")
+    );
+    let concurrency_text = format!(
+        "Max Concurrent Downloads: {} {}",
+        app.settings.max_concurrent_downloads.map_or("Unlimited".to_string(), |n| n.to_string()),
+        if app.selected_setting_index == 1 { "< >" } else { "" } // Hint for adjustment
+    );
+
+    let settings_items = vec![
+        ListItem::new(download_dir_text),
+        ListItem::new(concurrency_text),
+    ];
+
+    let list = List::new(settings_items)
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray) // Different highlight for settings
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+
+    frame.render_stateful_widget(list, inner_area, &mut app.settings_list_state);
 }
 
 
