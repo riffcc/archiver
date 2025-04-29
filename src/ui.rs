@@ -103,7 +103,7 @@ fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
             shown_count, count_str
         )
     } else {
-         "Items" // Default title if not browsing
+         "Items".to_string() // Convert literal to String
     };
 
     let border_style = if !app.is_filtering_input && app.current_state == AppState::Browsing {
@@ -290,9 +290,10 @@ fn render_file_list_pane(app: &mut App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    // Use `details` directly from the `if let` binding.
-    if let Some(details) = &app.current_item_details {
-        // Remove inner re-binding, use `details` directly
+    // Prefix `details` with `_` as it's not directly used after the `if let`.
+    if let Some(_details) = &app.current_item_details {
+        // Use app.current_item_details directly below where needed
+        let details = app.current_item_details.as_ref().unwrap(); // Safe to unwrap due to if let
 
         if details.files.is_empty() {
             let empty_msg = Paragraph::new("No files found for this item.")

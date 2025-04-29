@@ -280,7 +280,7 @@ pub async fn fetch_all_collection_identifiers(
     collection_name: &str,
 ) -> Result<Vec<String>> {
     // For now, just fetch the first page as a placeholder demonstration
-    let docs = fetch_collection_items(client, collection_name, 100, 1).await?; // Fetch up to 100
+    let (docs, _total_found) = fetch_collection_items(client, collection_name, 100, 1).await?; // Destructure, ignore total for now
     Ok(docs.into_iter().map(|doc| doc.identifier).collect())
     // TODO: Implement proper pagination loop here based on 'numFound' and 'rows'/'start'
 }
@@ -309,7 +309,8 @@ mod tests {
 
         // Assert
         assert!(result.is_ok(), "API call should succeed");
-        let items = result.unwrap();
+        let (items, total_found) = result.unwrap(); // Destructure the tuple
+        assert!(total_found > 0, "Total found should be greater than 0 for 'nasa'");
         assert!(!items.is_empty(), "Should return some items for 'nasa'");
         assert!(items.len() <= rows, "Should return at most 'rows' items"); // API might return fewer than requested if less available
         assert!(items.iter().all(|doc| !doc.identifier.is_empty()), "All items should have an identifier");
@@ -317,7 +318,8 @@ mod tests {
         // Fetch page 2 and check if identifiers are different (basic pagination check)
         let page2_result = fetch_collection_items(&client, collection_name, rows, page + 1).await;
         assert!(page2_result.is_ok(), "API call for page 2 should succeed");
-        let page2_items = page2_result.unwrap();
+        let (page2_items, page2_total_found) = page2_result.unwrap(); // Destructure page 2 result
+        assert_eq!(total_found, page2_total_found, "Total found should be consistent across pages");
         assert!(!page2_items.is_empty(), "Page 2 should also return items for 'nasa'");
         if !items.is_empty() && !page2_items.is_empty() {
              assert_ne!(items[0].identifier, page2_items[0].identifier, "First item of page 1 and page 2 should differ");
@@ -339,7 +341,8 @@ mod tests {
 
         // Assert
         assert!(result.is_ok(), "API call should still succeed even if no items are found");
-        let items = result.unwrap();
+        let (items, total_found) = result.unwrap(); // Destructure
+        assert_eq!(total_found, 0, "Total found should be 0 for non-existent collection");
         assert!(items.is_empty(), "Should return no items for a non-existent collection");
     }
 
@@ -359,7 +362,8 @@ mod tests {
         // Assert
         // We expect the API call to succeed but return no results for such a name
         assert!(result.is_ok(), "API call should succeed");
-        let items = result.unwrap();
+        let (items, total_found) = result.unwrap(); // Destructure
+        assert_eq!(total_found, 0, "Total found should be 0 for invalid collection name");
         assert!(items.is_empty(), "Should return no items for an invalid collection name format");
     }
 
