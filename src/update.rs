@@ -155,7 +155,7 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) {
             }
         }
         // Ignore input filtering keys while navigating
-        KeyCode::Char(c) if c != 'i' && c != 'd' && c != 'q' => {} // Ignore other chars not handled above
+        KeyCode::Char(c) if c != 'i' && c != 'd' && c != 'q' && c != 's' => {} // Also ignore 's' here
         KeyCode::Backspace | KeyCode::Left | KeyCode::Right => {}
         // Enter settings view
         KeyCode::Char('s') => {
