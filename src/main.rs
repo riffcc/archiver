@@ -1,13 +1,14 @@
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result}; // Add anyhow macro and Context trait
 use rust_tui_app::{
-    app::{App, AppState}, // Import AppState
-    archive_api::{self, ArchiveDoc, ItemDetails}, // Import ItemDetails
+    app::{App, DownloadAction, UpdateAction}, // Remove AppState, Add actions
+    archive_api::{self, ArchiveDoc, ItemDetails},
     event::{Event, EventHandler},
     settings,
     tui::Tui,
     update::update,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use reqwest::Client; // Add Client import
 use std::io;
 use tokio::sync::mpsc;
 
@@ -48,7 +49,7 @@ async fn main() -> Result<()> {
                         // Handle input and check if an action is requested
                         if let Some(action) = update(&mut app, key_event) {
                             match action {
-                                app::UpdateAction::FetchCollection => {
+                                UpdateAction::FetchCollection => { // Use direct name
                                     app.is_loading = true; // Set loading state for collection search
                                     app.items.clear(); // Clear previous items
                                     app.error_message = None; // Clear previous error
@@ -64,7 +65,7 @@ async fn main() -> Result<()> {
                                         let _ = tx.send(result).await;
                                     });
                                 }
-                                app::UpdateAction::FetchItemDetails => {
+                                UpdateAction::FetchItemDetails => { // Use direct name
                                     // is_loading_details should already be true from update()
                                     if let Some(identifier) = app.viewing_item_id.clone() {
                                         let client = app.client.clone();
@@ -80,7 +81,7 @@ async fn main() -> Result<()> {
                                         app.error_message = Some("Error: Tried to load details without an item ID.".to_string());
                                     }
                                 }
-                                app::UpdateAction::StartDownload(download_action) => {
+                                UpdateAction::StartDownload(download_action) => { // Use direct name
                                     if app.is_downloading {
                                         app.download_status = Some("Another download is already in progress.".to_string());
                                     } else if let Some(base_dir) = app.settings.download_directory.clone() {
@@ -93,10 +94,10 @@ async fn main() -> Result<()> {
 
                                         tokio::spawn(async move {
                                             let result = match download_action {
-                                                app::DownloadAction::Item(id) => {
+                                                DownloadAction::Item(id) => { // Use direct name
                                                     download_item(&client, &base_dir, &collection, &id, status_tx).await
                                                 }
-                                                app::DownloadAction::File(id, file) => {
+                                                DownloadAction::File(id, file) => { // Use direct name
                                                     download_single_file(&client, &base_dir, &collection, &id, &file, status_tx).await
                                                 }
                                             };

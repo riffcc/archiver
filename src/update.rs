@@ -295,10 +295,11 @@ mod tests {
         let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
         // Act
-        let should_trigger_api = update(&mut app, key_event);
+        let action = update(&mut app, key_event);
 
         // Assert
-        assert!(should_trigger_api, "Enter key should trigger an API call");
+        assert!(action.is_some(), "Enter key should trigger an action");
+        assert!(matches!(action, Some(UpdateAction::FetchCollection)), "Action should be FetchCollection");
         assert!(app.items.is_empty(), "Items should be cleared");
         assert!(app.list_state.selected().is_none(), "List selection should be reset");
         assert!(app.error_message.is_none(), "Error message should be cleared");
@@ -314,9 +315,9 @@ mod tests {
         app.list_state.select(None); // Ensure nothing selected
 
         let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        let should_trigger_api = update(&mut app, key_event);
+        let action = update(&mut app, key_event);
 
-        assert!(!should_trigger_api, "Enter should not trigger API call");
+        assert!(action.is_none(), "Enter should not trigger an action");
         assert!(app.is_filtering_input, "Should enter input filtering mode");
         assert_eq!(app.current_state, AppState::Browsing); // Should stay in browsing state
     }
@@ -330,9 +331,10 @@ mod tests {
         app.list_state.select(Some(0)); // Select the item
 
         let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        let should_trigger_api = update(&mut app, key_event);
+        let action = update(&mut app, key_event);
 
-        assert!(!should_trigger_api, "Enter should not trigger API call");
+        assert!(action.is_some(), "Enter should trigger an action");
+        assert!(matches!(action, Some(UpdateAction::FetchItemDetails)), "Action should be FetchItemDetails");
         assert!(!app.is_filtering_input, "Should not be filtering");
         assert_eq!(app.current_state, AppState::ViewingItem, "Should enter ViewingItem state");
         assert_eq!(app.viewing_item_id, Some("item1".to_string()));
@@ -542,9 +544,9 @@ mod tests {
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
         app.list_state.select(Some(0)); // Select an item
 
-        let should_trigger_api = update(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let action = update(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
 
-        assert!(!should_trigger_api);
+        assert!(action.is_none(), "'d' key should not trigger an action directly when dir is not set");
         assert_eq!(app.current_state, AppState::AskingDownloadDir, "State should change to AskingDownloadDir");
         assert!(app.collection_input.is_empty(), "Input field should be cleared for new input");
         assert_eq!(app.cursor_position, 0);
@@ -561,9 +563,9 @@ mod tests {
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
         app.list_state.select(Some(0));
 
-        let should_trigger_api = update(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let action = update(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
 
-        assert!(!should_trigger_api);
+        assert!(action.is_none(), "'d' key should not trigger an action when filtering");
         assert_eq!(app.current_state, AppState::Browsing); // State should not change
         assert!(app.is_filtering_input); // Should remain filtering
     }
@@ -578,9 +580,9 @@ mod tests {
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
         app.list_state.select(None); // No item selected
 
-        let should_trigger_api = update(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let action = update(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
 
-        assert!(!should_trigger_api);
+        assert!(action.is_none(), "'d' key should not trigger an action when no item selected");
         assert_eq!(app.current_state, AppState::Browsing); // State remains Browsing
         assert!(app.error_message.is_some());
         assert!(app.error_message.unwrap().contains("Select an item"));
@@ -596,13 +598,13 @@ mod tests {
         app.items = vec![crate::archive_api::ArchiveDoc { identifier: "item1".to_string() }];
         app.list_state.select(Some(0)); // Select an item
 
-        let should_trigger_api = update(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let action = update(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
 
-        assert!(!should_trigger_api);
-        assert_eq!(app.current_state, AppState::Browsing); // State remains Browsing (until download starts)
-        assert!(app.error_message.is_some()); // Placeholder message is set
-        assert!(app.error_message.unwrap().contains("Download started"));
-        // Later: Assert that state changes to Downloading and a task is spawned
+        assert!(action.is_some(), "'d' key should trigger an action when dir is set");
+        assert!(matches!(action, Some(UpdateAction::StartDownload(DownloadAction::Item(_)))), "Action should be StartDownload(Item)");
+        assert_eq!(app.current_state, AppState::Browsing); // State remains Browsing (main loop handles download start)
+        assert!(app.download_status.is_some()); // Status message should be set
+        assert!(app.download_status.unwrap().contains("Queueing download"));
     }
 
     #[test]
@@ -620,9 +622,9 @@ mod tests {
         assert_eq!(app.current_state, AppState::AskingDownloadDir);
 
         // Press Enter to save
-        let should_trigger_api = update(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let action = update(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert!(!should_trigger_api);
+        assert!(action.is_none(), "Enter should not trigger an action when saving dir");
         assert_eq!(app.current_state, AppState::Browsing, "State should revert to Browsing after save");
         assert!(app.collection_input.is_empty(), "Input field should be cleared");
         assert_eq!(app.settings.download_directory, Some("/tmp".to_string()), "Download directory should be saved in app state");
