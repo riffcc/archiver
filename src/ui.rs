@@ -378,26 +378,26 @@ fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
             app.download_status.as_deref().unwrap_or("...") // Show last status message
         )
     } else if let Some(status) = &app.download_status {
-        status.as_str() // Show final download status if not downloading but status exists
+        status.clone() // Clone the String status
     } else if let Some(err) = &app.error_message {
-        err.as_str()
+        err.clone() // Clone the String error
     } else if app.is_loading {
-        "Fetching collection data..."
+        "Fetching collection data...".to_string() // Convert literal to String
     } else if app.is_loading_details {
-         "Fetching item details..."
+         "Fetching item details...".to_string() // Convert literal to String
     } else if app.current_state == AppState::AskingDownloadDir {
-        "Enter the full path for downloads. Esc to cancel."
+        "Enter the full path for downloads. Esc to cancel.".to_string()
     } else if app.current_state == AppState::ViewingItem {
-        "Viewing item details. Esc: Back, ↑/↓: Files, Enter/d: Download File, 'b': Download All Files" // Added 'b'
+        "Viewing item details. Esc: Back, ↑/↓: Files, Enter/d: Download File, 'b': Download All Files".to_string()
     } else if app.current_state == AppState::SettingsView {
-         "Settings. Esc: Save & Back, ↑/↓: Select, Enter: Edit Dir, ←/→: Adjust Concurrency"
+         "Settings. Esc: Save & Back, ↑/↓: Select, Enter: Edit Dir, ←/→: Adjust Concurrency".to_string()
     } else if app.current_state == AppState::EditingSetting {
-         "Editing Download Directory. Enter: Save, Esc: Cancel" // Hint for editing setting
+         "Editing Download Directory. Enter: Save, Esc: Cancel".to_string()
     }
      else if app.is_filtering_input {
-        "Filtering Input. Press Esc to navigate list, Enter to search."
+        "Filtering Input. Press Esc to navigate list, Enter to search.".to_string()
     } else {
-        "Navigating List. 'q': Quit, 'i': Filter, 's': Settings, Enter: View, 'd': Download Item, 'b': Download All" // Added 's' and 'b'
+        "Navigating List. 'q': Quit, 'i': Filter, 's': Settings, Enter: View, 'd': Download Item, 'b': Download All".to_string()
     };
 
     let status_style = if app.error_message.is_some() || app.download_status.as_deref().unwrap_or("").contains("Error") || app.download_status.as_deref().unwrap_or("").contains("Failed") {
