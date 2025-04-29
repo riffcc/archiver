@@ -63,14 +63,14 @@ pub struct MetadataDetails {
 /// Represents the value part of an entry in the 'files' map from the API response.
 /// Note: The filename itself is the key in the map.
 #[derive(Deserialize, Debug, Clone)]
-struct FileDetailsInternal {
+pub struct FileDetailsInternal { // Made public
     pub source: Option<String>, // Usually "original" or "derivative"
     pub format: Option<String>, // e.g., "JPEG", "MP3", "JSON"
     pub size: Option<String>,   // Size is often a string, parse later if needed
     pub md5: Option<String>,
     // Add other file fields if needed (e.g., length, height, width)
     #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
+    pub _extra: HashMap<String, serde_json::Value>, // Prefixed with _
 }
 
 /// Final structure representing a file, used within ItemDetails.
@@ -159,7 +159,34 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
         .context(format!("Failed to parse JSON for item '{}'", identifier))?;
 
     // Process into our ItemDetails struct
-    let metadata = raw_details.metadata.unwrap_or_default(); // Provide default if metadata is missing
+    // Handle Option<MetadataDetails> explicitly instead of unwrap_or_default
+    let (title, creator, description, date, uploader, collections) =
+        if let Some(metadata) = &raw_details.metadata {
+            // Helper function to extract the first string from a Value (string or array)
+            // Defined inside the block where metadata is known to be Some
+            let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
+                match v {
+                    Some(serde_json::Value::String(s)) => Some(s.clone()),
+                    Some(serde_json::Value::Array(arr)) => arr
+                        .get(0)
+                        .and_then(|first| first.as_str())
+                        .map(String::from),
+                    _ => None,
+                }
+            };
+
+            (
+                get_first_string(&metadata.title),
+                get_first_string(&metadata.creator),
+                get_first_string(&metadata.description),
+                metadata.date.clone(), // Clone the Option<String>
+                metadata.uploader.clone(), // Clone the Option<String>
+                metadata.collection.clone().unwrap_or_default(), // Clone Option<Vec<String>>
+            )
+        } else {
+            // If metadata object is missing entirely, return None/empty values
+            (None, None, None, None, None, Vec::new())
+        };
 
     let download_base_url = match (raw_details.server, raw_details.dir) {
         (Some(server), Some(dir)) => Some(format!("https://{}/{}", server, dir)),
@@ -363,19 +390,4 @@ mod tests {
     }
 }
 
-// Add default implementation for MetadataDetails for cleaner error handling
-impl Default for MetadataDetails {
-    fn default() -> Self {
-        Self {
-            identifier: String::new(), // Default identifier is empty
-            title: None,
-            creator: None,
-            description: None,
-            date: None,
-            publicdate: None,
-            uploader: None,
-            collection: None,
-            extra: HashMap::new(),
-        }
-    }
-}
+// Removed default implementation for MetadataDetails
