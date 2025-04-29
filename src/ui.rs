@@ -4,7 +4,6 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-use tui_framework_experiment::input::Input; // Import the Input widget from the new crate
 
 /// Renders the user interface widgets.
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -23,11 +22,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 }
 
 fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
-    let input = Input::default()
-        .value(&app.collection_input)
-        .title("Collection Name")
-        .borders(Borders::ALL)
-        .prompt(" > "); // Optional: Add a prompt indicator
+    let input = Paragraph::new(format!("> {}", app.collection_input))
+        .block(Block::default().borders(Borders::ALL).title("Collection Name"));
 
     frame.render_widget(input, area);
     // Make the cursor visible and styled
