@@ -322,7 +322,8 @@ mod tests {
     async fn test_fetch_item_details_integration_success() {
         // Arrange
         let client = Client::new();
-        let identifier = "IsaacAsimov-TheFunTheyHad"; // A known item
+        // Using the item provided by the user
+        let identifier = "enrmp270_litmus_-_perception_of_light";
 
         // Act
         let result = fetch_item_details(&client, identifier).await;
@@ -332,15 +333,18 @@ mod tests {
         let details = result.unwrap();
 
         assert_eq!(details.identifier, identifier);
-        // Use assert_eq! with a more informative message if title is None
         assert_eq!(details.title.is_some(), true, "Title should be present for item '{}'. Details: {:?}", identifier, details);
-        assert!(details.creator.is_some(), "Should have a creator");
-        assert!(details.date.is_some(), "Should have a date");
+        assert_eq!(details.title.as_deref(), Some("Litmus - Perception Of Light [enrmp270]"), "Title mismatch");
+        assert!(details.creator.is_some(), "Should have a creator: {:?}", details.creator);
+        assert_eq!(details.creator.as_deref(), Some("Litmus"), "Creator mismatch");
+        assert!(details.date.is_some(), "Should have a date: {:?}", details.date);
+        assert!(!details.collections.is_empty(), "Should belong to collections: {:?}", details.collections);
+        assert!(details.collections.contains(&"enough_records".to_string()), "Should be in 'enough_records' collection");
         assert!(!details.files.is_empty(), "Should have files");
         assert!(details.download_base_url.is_some(), "Should have download base URL");
 
         // Check a specific file format (example)
-        assert!(details.files.iter().any(|f| f.format == Some("MP3".to_string())), "Should contain an MP3 file");
+        assert!(details.files.iter().any(|f| f.format == Some("VBR MP3".to_string())), "Should contain a VBR MP3 file format");
         assert!(details.files.iter().any(|f| f.name.ends_with(".mp3")), "Should contain a file ending with .mp3");
     }
 
@@ -370,9 +374,8 @@ mod tests {
     async fn test_fetch_item_details_integration_minimal_metadata() {
          // Arrange
         let client = Client::new();
-         // Find an item known to have minimal metadata if possible, or use a test item
-         // For now, using a known good item and checking defaults isn't ideal but demonstrates structure handling
-        let identifier = "gd1967-xx-xx.sbd.studio.81178.flac16"; // Example item
+         // Using Isaac Asimov item as a test case with potentially different metadata structure
+        let identifier = "IsaacAsimov-TheFunTheyHad";
 
         // Act
         let result = fetch_item_details(&client, identifier).await;
@@ -381,12 +384,15 @@ mod tests {
         assert!(result.is_ok(), "API call should succeed: {:?}", result.err());
         let details = result.unwrap();
         assert_eq!(details.identifier, identifier);
-        // Check that even if some fields were None in JSON, the call succeeds.
-        // We don't strictly need to assert title.is_some() for this specific item in a "minimal" test.
-        // The main point is that parsing didn't fail.
-        // We can still check that files were parsed if they exist for this item.
+        // Check specific fields for this item
+        assert_eq!(details.title.is_some(), true, "Title should be present for item '{}'. Details: {:?}", identifier, details);
+        assert_eq!(details.title.as_deref(), Some("The Fun They Had"), "Title mismatch");
+        assert!(details.creator.is_some(), "Creator should be present");
+        assert_eq!(details.creator.as_deref(), Some("Isaac Asimov"), "Creator mismatch");
+        assert!(!details.collections.is_empty(), "Should belong to collections");
+        assert!(details.collections.contains(&"librivoxaudio".to_string()), "Should be in 'librivoxaudio' collection");
         assert!(!details.files.is_empty(), "File list should be parsed for item '{}'. Details: {:?}", identifier, details);
-        // Other fields might be None, which is okay if the Option reflects that
+        assert!(details.download_base_url.is_some(), "Download base URL should be present");
     }
 }
 
