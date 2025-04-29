@@ -200,8 +200,7 @@ async fn main() -> Result<()> {
                  // if it's part of a larger bulk download. Resetting only on CollectionCompleted or Error.
 
                  // Update App state based on progress message
-                 }
-                 // Update App state based on progress message
+                 // Removed extra closing brace that was here
                  match status {
                      DownloadProgress::ItemStarted(id) => {
                          app.download_status = Some(format!("Starting: {}", id));
