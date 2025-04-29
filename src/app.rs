@@ -1,4 +1,7 @@
-use crate::{archive_api::ArchiveDoc, settings::Settings}; // Add Settings import
+use crate::{
+    archive_api::{ArchiveDoc, FileDetails, ItemDetails}, // Import ItemDetails, FileDetails
+    settings::Settings,
+};
 use ratatui::widgets::ListState;
 use reqwest::Client;
 
@@ -42,6 +45,12 @@ pub struct App {
     pub is_filtering_input: bool,
     /// Identifier of the item currently being viewed (if any)
     pub viewing_item_id: Option<String>,
+    /// Details of the item currently being viewed
+    pub current_item_details: Option<ItemDetails>,
+    /// State for the file list widget when viewing an item
+    pub file_list_state: ListState,
+    /// Flag indicating if item details are being loaded
+    pub is_loading_details: bool,
 }
 
 impl App {
@@ -61,6 +70,9 @@ impl App {
             settings: Settings::default(),
             is_filtering_input: true, // Start in input filtering mode
             viewing_item_id: None,
+            current_item_details: None,
+            file_list_state: ListState::default(),
+            is_loading_details: false,
         }
     }
 
@@ -155,6 +167,43 @@ impl App {
         self.list_state.select(Some(i));
     }
 
-    // Add methods to trigger API fetch, handle results, etc.
-    // We'll integrate this with main.rs later.
+    // --- File List Navigation ---
+
+    /// Selects the next file in the file list view.
+    pub fn select_next_file(&mut self) {
+        let file_count = self.current_item_details.as_ref().map_or(0, |d| d.files.len());
+        if file_count == 0 {
+            return;
+        }
+        let i = match self.file_list_state.selected() {
+            Some(i) => {
+                if i >= file_count - 1 { 0 } else { i + 1 }
+            }
+            None => 0,
+        };
+        self.file_list_state.select(Some(i));
+    }
+
+    /// Selects the previous file in the file list view.
+    pub fn select_previous_file(&mut self) {
+        let file_count = self.current_item_details.as_ref().map_or(0, |d| d.files.len());
+        if file_count == 0 {
+            return;
+        }
+        let i = match self.file_list_state.selected() {
+            Some(i) => {
+                if i == 0 { file_count - 1 } else { i - 1 }
+            }
+            None => 0, // Select the first item if nothing was selected
+        };
+        self.file_list_state.select(Some(i));
+    }
+
+    /// Gets the details of the currently selected file, if any.
+    pub fn get_selected_file(&self) -> Option<&FileDetails> {
+        match (self.file_list_state.selected(), &self.current_item_details) {
+            (Some(index), Some(details)) => details.files.get(index),
+            _ => None,
+        }
+    }
 }

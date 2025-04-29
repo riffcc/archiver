@@ -1,8 +1,11 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc}; // Import chrono types
 use reqwest::Client;
 use serde::Deserialize;
+use std::collections::HashMap; // For handling arbitrary metadata fields
 
-const ARCHIVE_API_URL: &str = "https://archive.org/advancedsearch.php";
+const ADVANCED_SEARCH_URL: &str = "https://archive.org/advancedsearch.php";
+const METADATA_URL_BASE: &str = "https://archive.org/metadata/";
 
 #[derive(Deserialize, Debug)]
 struct ArchiveSearchResponse {
@@ -21,7 +24,66 @@ pub struct ArchiveDoc {
     pub identifier: String,
     // Add other fields you might need, e.g., title, description
     // pub title: Option<String>,
+    // Consider adding other useful fields like 'title' if needed for the list view
 }
+
+// --- Structs for Item Metadata Endpoint (metadata/{identifier}) ---
+
+/// Represents the overall structure of the response from the metadata endpoint.
+#[derive(Deserialize, Debug, Clone)]
+pub struct ItemMetadataResponse {
+    pub metadata: Option<MetadataDetails>,
+    pub files: Option<Vec<FileDetails>>,
+    pub server: Option<String>, // Server hosting the files
+    pub dir: Option<String>,    // Directory path on the server
+    // Add other top-level fields if needed (e.g., reviews, related)
+}
+
+/// Represents the 'metadata' object within the response.
+#[derive(Deserialize, Debug, Clone)]
+pub struct MetadataDetails {
+    pub identifier: String,
+    pub title: Option<String>,
+    pub creator: Option<String>, // Can be single string or array, handle later if needed
+    pub description: Option<String>, // Can be single string or array
+    pub date: Option<String>, // Date can be in various formats, parse later
+    pub publicdate: Option<DateTime<Utc>>, // Already parsed if in standard format
+    pub uploader: Option<String>,
+    pub collection: Option<Vec<String>>, // Collection can be an array
+    // Use HashMap for other potential metadata fields we don't explicitly define
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Represents an individual file object within the 'files' array.
+#[derive(Deserialize, Debug, Clone)]
+pub struct FileDetails {
+    pub name: String,
+    pub source: Option<String>, // Usually "original" or "derivative"
+    pub format: Option<String>, // e.g., "JPEG", "MP3", "JSON"
+    pub size: Option<String>, // Size is often a string, parse later if needed
+    pub md5: Option<String>,
+    // Add other file fields if needed (e.g., length, height, width)
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// A processed structure holding the relevant details for display.
+#[derive(Debug, Clone, Default)]
+pub struct ItemDetails {
+    pub identifier: String,
+    pub title: Option<String>,
+    pub creator: Option<String>,
+    pub description: Option<String>,
+    pub date: Option<String>, // Keep as string for now due to format variety
+    pub uploader: Option<String>,
+    pub collections: Vec<String>,
+    pub files: Vec<FileDetails>, // Store the list of files
+    pub download_base_url: Option<String>, // Constructed base URL for downloads
+}
+
+
+// --- API Fetch Functions ---
 
 /// Fetches item identifiers for a given collection name from Archive.org.
 ///
@@ -33,13 +95,13 @@ pub async fn fetch_collection_items(
     page: usize, // Page number (1-based)
 ) -> Result<Vec<ArchiveDoc>> {
     let query = format!("collection:{}", collection_name);
-    // let start = (page - 1) * rows; // API uses 0-based start index - This is unused as we use 'page' param
+    // let start = (page - 1) * rows; // API uses 0-based start index
 
     let response = client
-        .get(ARCHIVE_API_URL)
+        .get(ADVANCED_SEARCH_URL)
         .query(&[
             ("q", query.as_str()),
-            ("fl[]", "identifier"), // Request only the identifier field
+            ("fl[]", "identifier"), // Request only the identifier field for the list
             // Add other fields to fl[] if needed later, e.g., "title"
             ("rows", &rows.to_string()),
             ("page", &page.to_string()), // Note: API might use 'start' instead of 'page' depending on endpoint version/preference
@@ -60,6 +122,48 @@ pub async fn fetch_collection_items(
     Ok(search_result.response.docs)
 }
 
+/// Fetches detailed metadata and file list for a given item identifier.
+pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<ItemDetails> {
+    let url = format!("{}{}", METADATA_URL_BASE, identifier);
+
+    let response = client.get(&url).send().await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "Metadata API request failed for '{}' with status: {}",
+            identifier,
+            response.status()
+        ));
+    }
+
+    let raw_details = response
+        .json::<ItemMetadataResponse>()
+        .await
+        .context(format!("Failed to parse JSON for item '{}'", identifier))?;
+
+    // Process into our ItemDetails struct
+    let metadata = raw_details.metadata.unwrap_or_default(); // Provide default if metadata is missing
+
+    let download_base_url = match (raw_details.server, raw_details.dir) {
+        (Some(server), Some(dir)) => Some(format!("https://{}/{}", server, dir)),
+        _ => None,
+    };
+
+    let details = ItemDetails {
+        identifier: metadata.identifier.clone(), // Use identifier from metadata if available
+        title: metadata.title,
+        creator: metadata.creator,
+        description: metadata.description,
+        date: metadata.date, // Keep raw date string for now
+        uploader: metadata.uploader,
+        collections: metadata.collection.unwrap_or_default(),
+        files: raw_details.files.unwrap_or_default(), // Use empty vec if files missing
+        download_base_url,
+    };
+
+    Ok(details)
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -69,6 +173,7 @@ mod tests {
 
     // --- Integration Tests (require network access to archive.org) ---
 
+    // --- fetch_collection_items tests ---
     #[tokio::test]
     #[ignore] // Ignored by default, run with `cargo test -- --ignored`
     async fn test_fetch_collection_items_integration_success() {
@@ -135,5 +240,91 @@ mod tests {
         assert!(result.is_ok(), "API call should succeed");
         let items = result.unwrap();
         assert!(items.is_empty(), "Should return no items for an invalid collection name format");
+    }
+
+    // --- fetch_item_details tests ---
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_fetch_item_details_integration_success() {
+        // Arrange
+        let client = Client::new();
+        let identifier = "IsaacAsimov-TheFunTheyHad"; // A known item
+
+        // Act
+        let result = fetch_item_details(&client, identifier).await;
+
+        // Assert
+        assert!(result.is_ok(), "API call should succeed: {:?}", result.err());
+        let details = result.unwrap();
+
+        assert_eq!(details.identifier, identifier);
+        assert!(details.title.is_some(), "Should have a title");
+        assert!(details.creator.is_some(), "Should have a creator");
+        assert!(details.date.is_some(), "Should have a date");
+        assert!(!details.files.is_empty(), "Should have files");
+        assert!(details.download_base_url.is_some(), "Should have download base URL");
+
+        // Check a specific file format (example)
+        assert!(details.files.iter().any(|f| f.format == Some("MP3".to_string())), "Should contain an MP3 file");
+        assert!(details.files.iter().any(|f| f.name.ends_with(".mp3")), "Should contain a file ending with .mp3");
+    }
+
+     #[tokio::test]
+    #[ignore]
+    async fn test_fetch_item_details_integration_not_found() {
+        // Arrange
+        let client = Client::new();
+        let identifier = "this_item_definitely_does_not_exist_98765";
+
+        // Act
+        let result = fetch_item_details(&client, identifier).await;
+
+        // Assert
+        assert!(result.is_err(), "API call should fail for non-existent item");
+        let error_message = result.err().unwrap().to_string();
+        // The API might return 404 or sometimes 200 with empty/null fields.
+        // Let's check for failure status or inability to parse expected structure.
+        // A simple check for the identifier in the error message might suffice here.
+        assert!(error_message.contains(identifier) || error_message.contains("failed"), "Error message should indicate failure related to the item");
+        // If the API returns 200 OK with nulls, the error might be context("Failed to parse JSON...")
+    }
+
+     #[tokio::test]
+    #[ignore]
+    async fn test_fetch_item_details_integration_minimal_metadata() {
+         // Arrange
+        let client = Client::new();
+         // Find an item known to have minimal metadata if possible, or use a test item
+         // For now, using a known good item and checking defaults isn't ideal but demonstrates structure handling
+        let identifier = "gd1967-xx-xx.sbd.studio.81178.flac16"; // Example item
+
+        // Act
+        let result = fetch_item_details(&client, identifier).await;
+
+        // Assert
+        assert!(result.is_ok(), "API call should succeed: {:?}", result.err());
+        let details = result.unwrap();
+        assert_eq!(details.identifier, identifier);
+        // Check that even if some fields were None in JSON, they are handled
+        assert!(details.title.is_some()); // This item should have a title
+        // Other fields might be None, which is okay if the Option reflects that
+    }
+}
+
+// Add default implementation for MetadataDetails for cleaner error handling
+impl Default for MetadataDetails {
+    fn default() -> Self {
+        Self {
+            identifier: String::new(), // Default identifier is empty
+            title: None,
+            creator: None,
+            description: None,
+            date: None,
+            publicdate: None,
+            uploader: None,
+            collection: None,
+            extra: HashMap::new(),
+        }
     }
 }
