@@ -381,31 +381,7 @@ mod tests {
         assert!(details.files.is_empty(), "Non-existent item should have no files");
     }
 
-     #[tokio::test]
-    #[ignore]
-    async fn test_fetch_item_details_integration_minimal_metadata() {
-         // Arrange
-        let client = Client::new();
-         // Using Isaac Asimov item as a test case with potentially different metadata structure
-        let identifier = "IsaacAsimov-TheFunTheyHad";
-
-        // Act
-        let result = fetch_item_details(&client, identifier).await;
-
-        // Assert
-        assert!(result.is_ok(), "API call should succeed: {:?}", result.err());
-        let details = result.unwrap();
-        assert_eq!(details.identifier, identifier);
-        // Check specific fields for this item
-        assert_eq!(details.title.is_some(), true, "Title should be present for item '{}'. Details: {:?}", identifier, details);
-        assert_eq!(details.title.as_deref(), Some("The Fun They Had"), "Title mismatch");
-        assert!(details.creator.is_some(), "Creator should be present");
-        assert_eq!(details.creator.as_deref(), Some("Isaac Asimov"), "Creator mismatch");
-        assert!(!details.collections.is_empty(), "Should belong to collections");
-        assert!(details.collections.contains(&"librivoxaudio".to_string()), "Should be in 'librivoxaudio' collection");
-        assert!(!details.files.is_empty(), "File list should be parsed for item '{}'. Details: {:?}", identifier, details);
-        assert!(details.download_base_url.is_some(), "Download base URL should be present");
-    }
+    // Removed test_fetch_item_details_integration_minimal_metadata as it used an invalid identifier
 }
 
 // Removed default implementation for MetadataDetails
