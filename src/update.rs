@@ -775,7 +775,8 @@ mod tests {
         let action = update(&mut app, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
 
         assert!(action.is_some(), "'d' key should trigger an action when dir is set");
-        assert!(matches!(action, Some(UpdateAction::StartDownload(DownloadAction::Item(_)))), "Action should be StartDownload(Item)");
+        // Use the correct variant name ItemAllFiles
+        assert!(matches!(action, Some(UpdateAction::StartDownload(DownloadAction::ItemAllFiles(_)))), "Action should be StartDownload(ItemAllFiles)");
         assert_eq!(app.current_state, AppState::Browsing); // State remains Browsing (main loop handles download start)
         assert!(app.download_status.is_some()); // Status message should be set
         assert!(app.download_status.unwrap().contains("Queueing download"));
