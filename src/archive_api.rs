@@ -51,9 +51,9 @@ pub struct MetadataDetails {
     pub creator: Option<serde_json::Value>,
     pub description: Option<serde_json::Value>,
     pub date: Option<String>, // Date can be in various formats, parse later
-    pub publicdate: Option<DateTime<Utc>>, // Already parsed if in standard format
+    pub publicdate: Option<String>, // Changed back to String to avoid parsing errors
     pub uploader: Option<String>,
-    pub collection: Option<Vec<String>>, // Collection can be an array
+    pub collection: Option<serde_json::Value>, // Changed to Value for flexibility
     // Use HashMap for other potential metadata fields we don't explicitly define
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -158,30 +158,42 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
         .await
         .context(format!("Failed to parse JSON for item '{}'", identifier))?;
 
+    // Helper function to extract the first string from a Value (string or array)
+    let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
+        match v {
+            Some(serde_json::Value::String(s)) => Some(s.clone()),
+            Some(serde_json::Value::Array(arr)) => arr
+                .get(0)
+                .and_then(|first| first.as_str())
+                .map(String::from),
+            _ => None,
+        }
+    };
+
+    // Helper function to extract a string array from a Value (string or array)
+    let get_string_array = |v: &Option<serde_json::Value>| -> Vec<String> {
+        match v {
+            Some(serde_json::Value::String(s)) => vec![s.clone()], // Single string becomes a vec
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|val| val.as_str().map(String::from))
+                .collect(),
+            _ => Vec::new(), // Otherwise, return empty vec
+        }
+    };
+
+
     // Process into our ItemDetails struct
     // Handle Option<MetadataDetails> explicitly instead of unwrap_or_default
     let (title, creator, description, date, uploader, collections) =
         if let Some(metadata) = &raw_details.metadata {
-            // Helper function to extract the first string from a Value (string or array)
-            // Defined inside the block where metadata is known to be Some
-            let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
-                match v {
-                    Some(serde_json::Value::String(s)) => Some(s.clone()),
-                    Some(serde_json::Value::Array(arr)) => arr
-                        .get(0)
-                        .and_then(|first| first.as_str())
-                        .map(String::from),
-                    _ => None,
-                }
-            };
-
-            (
+             (
                 get_first_string(&metadata.title),
                 get_first_string(&metadata.creator),
                 get_first_string(&metadata.description),
                 metadata.date.clone(), // Clone the Option<String>
                 metadata.uploader.clone(), // Clone the Option<String>
-                metadata.collection.clone().unwrap_or_default(), // Clone Option<Vec<String>>
+                get_string_array(&metadata.collection), // Use helper for collection
             )
         } else {
             // If metadata object is missing entirely, return None/empty values
