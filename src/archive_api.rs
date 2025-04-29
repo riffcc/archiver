@@ -190,31 +190,16 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
 
     let download_base_url = match (raw_details.server, raw_details.dir) {
         (Some(server), Some(dir)) => Some(format!("https://{}/{}", server, dir)),
-        _ => None,
-    };
-
-    // Helper function to extract the first string from a Value (string or array)
-    let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
-        match v {
-            Some(serde_json::Value::String(s)) => Some(s.clone()),
-            Some(serde_json::Value::Array(arr)) => arr
-                .get(0)
-                .and_then(|first| first.as_str())
-                .map(String::from),
-            _ => None,
-        }
-    };
-
-    // Ensure the identifier in the returned struct matches the one requested,
-    // regardless of what the metadata field in the response contains.
+    // Ensure the identifier in the returned struct matches the one requested.
+    // Use the variables extracted earlier.
     let details = ItemDetails {
         identifier: identifier.to_string(), // Use the function argument identifier
-        title: get_first_string(&metadata.title),
-        creator: get_first_string(&metadata.creator),
-        description: get_first_string(&metadata.description),
-        date: metadata.date, // Keep raw date string for now
-        uploader: metadata.uploader,
-        collections: metadata.collection.unwrap_or_default(),
+        title,                              // Use processed value
+        creator,                            // Use processed value
+        description,                        // Use processed value
+        date,                               // Use processed value
+        uploader,                           // Use processed value
+        collections,                        // Use processed value
         files: raw_details
             .files
             .map(|files_map| {
