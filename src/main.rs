@@ -21,8 +21,8 @@ async fn main() -> Result<()> {
     let mut app = App::new();
     app.load_settings(settings);
 
-    // Create a channel for collection search API results
-    let (collection_api_tx, mut collection_api_rx) = mpsc::channel::<Result<Vec<ArchiveDoc>>>(1);
+    // Create a channel for collection search API results (now returns tuple)
+    let (collection_api_tx, mut collection_api_rx) = mpsc::channel::<Result<(Vec<ArchiveDoc>, usize)>>(1);
     // Create a channel for item details API results
     let (item_details_tx, mut item_details_rx) = mpsc::channel::<Result<ItemDetails>>(1);
     // Create a channel for download progress updates
@@ -155,8 +155,9 @@ async fn main() -> Result<()> {
             Some(result) = collection_api_rx.recv() => {
                 app.is_loading = false; // Reset collection loading state
                 match result {
-                    Ok(items) => {
+                    Ok((items, total_found)) => { // Destructure the tuple
                         app.items = items;
+                        app.total_items_found = Some(total_found); // Store total found
                         if !app.items.is_empty() {
                              app.list_state.select(Some(0)); // Select first item if list is not empty
                         } else {
@@ -166,6 +167,7 @@ async fn main() -> Result<()> {
                     }
                     Err(e) => {
                         app.items.clear(); // Clear items on error
+                        app.total_items_found = None; // Clear total found on error
                         app.list_state.select(None); // Deselect on error
                         app.error_message = Some(format!("Error fetching data: {}", e));
                     }

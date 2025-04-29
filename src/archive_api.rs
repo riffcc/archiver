@@ -111,7 +111,7 @@ pub async fn fetch_collection_items(
     collection_name: &str,
     rows: usize, // Number of results per page
     page: usize, // Page number (1-based)
-) -> Result<Vec<ArchiveDoc>> {
+) -> Result<(Vec<ArchiveDoc>, usize)> { // Return tuple: (docs, total_found)
     let query = format!("collection:{}", collection_name);
     // let start = (page - 1) * rows; // API uses 0-based start index
 
@@ -137,7 +137,7 @@ pub async fn fetch_collection_items(
 
     let search_result = response.json::<ArchiveSearchResponse>().await?;
 
-    Ok(search_result.response.docs)
+    Ok((search_result.response.docs, search_result.response.num_found)) // Return tuple
 }
 
 /// Fetches detailed metadata and file list for a given item identifier.

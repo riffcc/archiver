@@ -46,6 +46,8 @@ pub struct App {
     pub is_loading: bool,
     /// Flag to indicate if the user is currently filtering the collection input
     pub is_filtering_input: bool,
+    /// Total number of items found in the last collection search
+    pub total_items_found: Option<usize>,
     /// Identifier of the item currently being viewed (if any)
     pub viewing_item_id: Option<String>,
     /// Details of the item currently being viewed
@@ -137,6 +139,7 @@ impl App {
             current_state: AppState::Browsing,
             settings: Settings::default(),
             is_filtering_input: true, // Start in input filtering mode
+            total_items_found: None,
             viewing_item_id: None,
             current_item_details: None,
             file_list_state: ListState::default(),

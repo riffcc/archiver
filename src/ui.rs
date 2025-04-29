@@ -96,7 +96,12 @@ fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
     let list_title = if app.is_filtering_input && app.current_state == AppState::Browsing {
         "Items (Press Esc to navigate)"
     } else if app.current_state == AppState::Browsing {
-         "Items ('i': Filter, 's': Settings, Enter: View, 'd': Download Item, 'b': Download All, ↑/↓: Nav)" // Updated title
+        let count_str = app.total_items_found.map_or("?".to_string(), |t| t.to_string());
+        let shown_count = app.items.len(); // Assuming only one page shown for now
+        format!(
+            "Items (Showing {} / {} Total) ('i': Filter, 's': Settings, Enter: View, 'd': Item, 'b': All, ↑/↓: Nav)",
+            shown_count, count_str
+        )
     } else {
          "Items" // Default title if not browsing
     };
