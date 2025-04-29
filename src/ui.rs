@@ -22,23 +22,38 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 }
 
 fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
-    let (input_prompt, block_title) = match app.current_state {
-        AppState::Browsing => ("> ", "Collection Name"),
-        AppState::AskingDownloadDir => ("Enter Path: ", "Set Download Directory (Enter to save, Esc to cancel)"),
-        AppState::Downloading => ("> ", "Collection Name"), // Or maybe disable input?
+    let (input_prompt, mut block_title) = match app.current_state {
+         AppState::Browsing => ("> ", "Collection Name"),
+         AppState::AskingDownloadDir => ("Enter Path: ", "Set Download Directory (Enter to save, Esc to cancel)"),
+         AppState::Downloading => ("> ", "Collection Name"), // Or maybe disable input?
+     };
+
+    // Modify title based on editing mode only when Browsing
+    let border_style = if app.is_editing_input && app.current_state == AppState::Browsing {
+        block_title = "Collection Name (Editing)";
+        Style::default().fg(Color::Yellow) // Highlight border when editing
+    } else if app.current_state == AppState::AskingDownloadDir {
+         Style::default().fg(Color::Yellow) // Also highlight when asking for dir
+    }
+     else {
+        Style::default() // Default border style
     };
 
+
     let input_text = format!("{}{}", input_prompt, app.collection_input);
-    let input = Paragraph::new(input_text)
-        .block(Block::default().borders(Borders::ALL).title(block_title));
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .title(block_title)
+        .border_style(border_style);
+
+    let input = Paragraph::new(input_text).block(input_block);
 
     frame.render_widget(input, area);
 
-    // Only show cursor if we are expecting input
-    if app.current_state == AppState::Browsing || app.current_state == AppState::AskingDownloadDir {
-        // Make the cursor visible and styled
+    // Only show cursor if we are actively editing input in a relevant state
+    if app.is_editing_input && (app.current_state == AppState::Browsing || app.current_state == AppState::AskingDownloadDir) {
         frame.set_cursor_position((
-            area.x + app.cursor_position as u16 + input_prompt.len() as u16,
+            area.x + app.cursor_position as u16 + input_prompt.len() as u16, // Adjust for prompt
             area.y + 1,
         ));
     }
@@ -46,7 +61,24 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
 
 
 fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
-    let list_block = Block::default().borders(Borders::ALL).title("Items ('d' to download selected)");
+    let list_title = if app.is_editing_input && app.current_state == AppState::Browsing {
+        "Items (Press Esc to navigate)"
+    } else if app.current_state == AppState::Browsing {
+         "Items ('i'/'Enter' to edit, 'd' to download, Up/Down to navigate)"
+    } else {
+         "Items" // Don't show items list when asking for dir etc.
+    };
+
+    let border_style = if !app.is_editing_input && app.current_state == AppState::Browsing {
+        Style::default().fg(Color::Yellow) // Highlight border when navigating list
+    } else {
+        Style::default()
+    };
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title(list_title)
+        .border_style(border_style);
 
     if app.is_loading {
         let loading_paragraph = Paragraph::new("Loading...")
@@ -111,10 +143,11 @@ fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
     } else if app.is_loading {
         "Fetching data..."
     } else if app.current_state == AppState::AskingDownloadDir {
-        "Enter the full path for downloads."
-    }
-     else {
-        "Ready. Press 'q' to quit, 'd' to download."
+        "Enter the full path for downloads. Esc to cancel."
+    } else if app.is_editing_input {
+        "Editing Input. Press Esc to navigate list, Enter to search."
+    } else {
+        "Navigating List. Press 'q' to quit, 'i'/'Enter' to edit, 'd' to download."
     };
 
     let status_style = if app.error_message.is_some() {

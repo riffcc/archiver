@@ -36,6 +36,8 @@ pub struct App {
     pub error_message: Option<String>,
     /// Flag to indicate if we are currently fetching data
     pub is_loading: bool,
+    /// Flag to indicate if the user is currently editing the input field
+    pub is_editing_input: bool,
 }
 
 impl App {
@@ -53,6 +55,7 @@ impl App {
             // Initialize with default state and settings (will be loaded properly in main)
             current_state: AppState::Browsing,
             settings: Settings::default(),
+            is_editing_input: true, // Start in input editing mode
         }
     }
 
