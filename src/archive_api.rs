@@ -35,8 +35,8 @@ pub struct ArchiveDoc {
 #[derive(Deserialize, Debug, Clone)]
 pub struct ItemMetadataResponse {
     pub metadata: Option<MetadataDetails>,
-    // Changed from Vec<FileDetails> to HashMap<String, FileDetailsInternal>
-    pub files: Option<HashMap<String, FileDetailsInternal>>,
+    // Changed to Value to handle potential empty array `[]` from API instead of map `{}`
+    pub files: Option<serde_json::Value>,
     pub server: Option<String>, // Server hosting the files
     pub dir: Option<String>,    // Directory path on the server
     // Add other top-level fields if needed (e.g., reviews, related)
@@ -215,22 +215,30 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
         date,                               // Use processed value
         uploader,                           // Use processed value
         collections,                        // Use processed value
-        files: raw_details
-            .files
-            .map(|files_map| {
+        files: match raw_details.files {
+            // Check if 'files' is a JSON object (Map)
+            Some(serde_json::Value::Object(files_map)) => {
                 files_map
                     .into_iter()
-                    .map(|(name, internal_details)| FileDetails {
-                        // Remove leading '/' from filename if present (common in API)
-                        name: name.strip_prefix('/').unwrap_or(&name).to_string(),
-                        source: internal_details.source,
-                        format: internal_details.format,
-                        size: internal_details.size,
-                        md5: internal_details.md5,
+                    .filter_map(|(name, value)| {
+                        // Attempt to deserialize each value in the map into FileDetailsInternal
+                        match serde_json::from_value::<FileDetailsInternal>(value) {
+                            Ok(internal_details) => Some(FileDetails {
+                                // Remove leading '/' from filename if present (common in API)
+                                name: name.strip_prefix('/').unwrap_or(&name).to_string(),
+                                source: internal_details.source,
+                                format: internal_details.format,
+                                size: internal_details.size,
+                                md5: internal_details.md5,
+                            }),
+                            Err(_) => None, // Skip files that don't match the expected structure
+                        }
                     })
                     .collect()
-            })
-            .unwrap_or_default(), // Use empty vec if files field is missing or None
+            }
+            // If 'files' is not an object (e.g., null, empty array []), return empty vec
+            _ => Vec::new(),
+        },
         download_base_url,
     };
 
