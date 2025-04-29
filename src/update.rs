@@ -108,6 +108,9 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) -> bo
                     app.current_state = AppState::ViewingItem;
                     app.is_filtering_input = false; // Ensure not filtering when viewing
                     app.error_message = None; // Clear any previous message
+                    app.current_item_details = None; // Clear previous details
+                    app.file_list_state = ListState::default(); // Reset file list selection
+                    app.is_loading_details = true; // Set flag to trigger fetch in main loop
                  }
             } else {
                 // If no item is selected, Enter goes to filter mode
@@ -203,13 +206,22 @@ fn handle_viewing_item_input(app: &mut App, key_event: KeyEvent) -> bool {
             // Go back to browsing navigate mode
             app.current_state = AppState::Browsing;
             app.viewing_item_id = None; // Clear the viewed item ID
+            app.current_item_details = None; // Clear details
+            app.file_list_state = ListState::default(); // Reset file list state
             app.is_filtering_input = false; // Ensure back in navigate mode
             app.error_message = None;
         }
-        // Add other keys for item view later (e.g., scroll, download files)
-        _ => {}
+        KeyCode::Down => {
+            app.select_next_file();
+        }
+        KeyCode::Up => {
+            app.select_previous_file();
+        }
+        // TODO: Add Enter key handling to download/view selected file
+        // TODO: Add 'd' key handling to download selected file
+        _ => {} // Ignore other keys for now
     }
-    false // Never triggers API call
+    false // Never triggers collection search API call
 }
 
 
