@@ -23,11 +23,11 @@ pub enum Event {
 #[derive(Debug)]
 pub struct EventHandler {
     /// Event sender channel.
-    sender: mpsc::Sender<Event>,
+    _sender: mpsc::Sender<Event>, // Prefixed with _
     /// Event receiver channel.
     receiver: mpsc::Receiver<Event>,
     /// Event handler thread.
-    handler: thread::JoinHandle<()>,
+    _handler: thread::JoinHandle<()>, // Prefixed with _
 }
 
 impl EventHandler {
@@ -37,6 +37,7 @@ impl EventHandler {
         let (sender, receiver) = mpsc::channel();
         let handler = {
             let sender = sender.clone();
+            let sender = sender.clone(); // Keep the clone for the thread
             thread::spawn(move || {
                 let mut last_tick = Instant::now();
                 loop {
@@ -46,9 +47,9 @@ impl EventHandler {
 
                     if event::poll(timeout).expect("unable to poll for event") {
                         match event::read().expect("unable to read event") {
-                            CrosstermEvent::Key(e) => sender.send(Event::Key(e)),
-                            CrosstermEvent::Mouse(e) => sender.send(Event::Mouse(e)),
-                            CrosstermEvent::Resize(w, h) => sender.send(Event::Resize(w, h)),
+                            CrosstermEvent::Key(e) => sender.send(Event::Key(e)), // Use the cloned sender
+                            CrosstermEvent::Mouse(e) => sender.send(Event::Mouse(e)), // Use the cloned sender
+                            CrosstermEvent::Resize(w, h) => sender.send(Event::Resize(w, h)), // Use the cloned sender
                             _ => Ok(()), // Ignore other event types
                         }
                         .expect("failed to send terminal event")
@@ -62,9 +63,9 @@ impl EventHandler {
             })
         };
         Self {
-            sender,
+            _sender: sender, // Assign to the prefixed field
             receiver,
-            handler,
+            _handler: handler, // Assign to the prefixed field
         }
     }
 

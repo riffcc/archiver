@@ -35,7 +35,8 @@ pub struct ArchiveDoc {
 #[derive(Deserialize, Debug, Clone)]
 pub struct ItemMetadataResponse {
     pub metadata: Option<MetadataDetails>,
-    pub files: Option<Vec<FileDetails>>,
+    // Changed from Vec<FileDetails> to HashMap<String, FileDetailsInternal>
+    pub files: Option<HashMap<String, FileDetailsInternal>>,
     pub server: Option<String>, // Server hosting the files
     pub dir: Option<String>,    // Directory path on the server
     // Add other top-level fields if needed (e.g., reviews, related)
@@ -56,20 +57,34 @@ pub struct MetadataDetails {
     // Use HashMap for other potential metadata fields we don't explicitly define
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
-/// Represents an individual file object within the 'files' array.
+/// Represents the value part of an entry in the 'files' map from the API response.
+/// Note: The filename itself is the key in the map.
 #[derive(Deserialize, Debug, Clone)]
-pub struct FileDetails {
-    pub name: String,
+struct FileDetailsInternal {
     pub source: Option<String>, // Usually "original" or "derivative"
     pub format: Option<String>, // e.g., "JPEG", "MP3", "JSON"
-    pub size: Option<String>, // Size is often a string, parse later if needed
+    pub size: Option<String>,   // Size is often a string, parse later if needed
     pub md5: Option<String>,
     // Add other file fields if needed (e.g., length, height, width)
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
+
+/// Final structure representing a file, used within ItemDetails.
+/// This is constructed manually, not directly deserialized.
+#[derive(Debug, Clone, Default)]
+pub struct FileDetails {
+    pub name: String, // The actual filename
+    pub source: Option<String>,
+    pub format: Option<String>,
+    pub size: Option<String>,
+    pub md5: Option<String>,
+}
+
 
 /// A processed structure holding the relevant details for display.
 #[derive(Debug, Clone, Default)]
@@ -174,7 +189,22 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
         date: metadata.date, // Keep raw date string for now
         uploader: metadata.uploader,
         collections: metadata.collection.unwrap_or_default(),
-        files: raw_details.files.unwrap_or_default(), // Use empty vec if files missing
+        files: raw_details
+            .files
+            .map(|files_map| {
+                files_map
+                    .into_iter()
+                    .map(|(name, internal_details)| FileDetails {
+                        // Remove leading '/' from filename if present (common in API)
+                        name: name.strip_prefix('/').unwrap_or(&name).to_string(),
+                        source: internal_details.source,
+                        format: internal_details.format,
+                        size: internal_details.size,
+                        md5: internal_details.md5,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(), // Use empty vec if files field is missing or None
         download_base_url,
     };
 
