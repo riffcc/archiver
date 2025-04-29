@@ -215,7 +215,10 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
         date,                               // Use processed value
         uploader,                           // Use processed value
         collections,                        // Use processed value
-        files: match raw_details.files {
+        files: {
+            // Debug: Print the raw files value before matching
+            eprintln!("Raw files value: {:?}", raw_details.files);
+            match raw_details.files {
             // Check if 'files' is a JSON object (Map)
             Some(serde_json::Value::Object(files_map)) => {
                 files_map
@@ -251,6 +254,7 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
             }
             // If 'files' is not an object (e.g., null, empty array []), return empty vec
             _ => Vec::new(),
+            }
         },
         download_base_url,
     };
