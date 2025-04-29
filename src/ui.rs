@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-use ratatui_widgets::Input; // Import the Input widget directly from the crate root
+use ratatui_widgets::input::Input; // Import the Input widget from its module
 
 /// Renders the user interface widgets.
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -15,7 +15,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Constraint::Min(0),    // List of items
             Constraint::Length(1), // Status/Error message
         ])
-        .split(frame.size());
+        .split(frame.area());
 
     render_input(app, frame, main_layout[0]);
     render_item_list(app, frame, main_layout[1]);
@@ -31,7 +31,7 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(input, area);
     // Make the cursor visible and styled
-    frame.set_cursor(
+    frame.set_cursor_position(
         // Put cursor past the end of the input text
         area.x + app.cursor_position as u16 + 3, // +3 for border and prompt "> "
         // Move one line down, from the border to the input line
