@@ -56,8 +56,8 @@ fn handle_browsing_input_filter_mode(app: &mut App, key_event: KeyEvent) -> bool
     let mut trigger_api_call = false;
     match key_event.code {
         // Esc is handled globally to exit filter mode
-        // Ignore navigation/action keys first
-        KeyCode::Up | KeyCode::Down | KeyCode::Char('d') | KeyCode::Char('i') => {}
+        // Ignore navigation/action keys first (Up/Down for list nav, 'i' to enter filter mode)
+        KeyCode::Up | KeyCode::Down | KeyCode::Char('i') => {}
 
         // Then handle actual input editing keys
         KeyCode::Char(to_insert) => {
