@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-use tui_framework_experiment::Input; // Import the Input widget from the new crate
+use tui_framework_experiment::input::Input; // Import the Input widget from the new crate
 
 /// Renders the user interface widgets.
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -31,12 +31,7 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(input, area);
     // Make the cursor visible and styled
-    frame.set_cursor_position(
-        // Put cursor past the end of the input text
-        area.x + app.cursor_position as u16 + 3, // +3 for border and prompt "> "
-        // Move one line down, from the border to the input line
-        area.y + 1,
-    );
+    frame.set_cursor_position((area.x + app.cursor_position as u16 + 3, area.y + 1));
 }
 
 fn render_item_list(app: &mut App, frame: &mut Frame, area: Rect) {
