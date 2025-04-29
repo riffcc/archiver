@@ -45,9 +45,10 @@ pub struct ItemMetadataResponse {
 #[derive(Deserialize, Debug, Clone)]
 pub struct MetadataDetails {
     pub identifier: String,
-    pub title: Option<String>,
-    pub creator: Option<String>, // Can be single string or array, handle later if needed
-    pub description: Option<String>, // Can be single string or array
+    // Use Value to handle string-or-array cases for common fields
+    pub title: Option<serde_json::Value>,
+    pub creator: Option<serde_json::Value>,
+    pub description: Option<serde_json::Value>,
     pub date: Option<String>, // Date can be in various formats, parse later
     pub publicdate: Option<DateTime<Utc>>, // Already parsed if in standard format
     pub uploader: Option<String>,
@@ -151,13 +152,25 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
         _ => None,
     };
 
+    // Helper function to extract the first string from a Value (string or array)
+    let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
+        match v {
+            Some(serde_json::Value::String(s)) => Some(s.clone()),
+            Some(serde_json::Value::Array(arr)) => arr
+                .get(0)
+                .and_then(|first| first.as_str())
+                .map(String::from),
+            _ => None,
+        }
+    };
+
     // Ensure the identifier in the returned struct matches the one requested,
     // regardless of what the metadata field in the response contains.
     let details = ItemDetails {
         identifier: identifier.to_string(), // Use the function argument identifier
-        title: metadata.title,
-        creator: metadata.creator,
-        description: metadata.description,
+        title: get_first_string(&metadata.title),
+        creator: get_first_string(&metadata.creator),
+        description: get_first_string(&metadata.description),
         date: metadata.date, // Keep raw date string for now
         uploader: metadata.uploader,
         collections: metadata.collection.unwrap_or_default(),
