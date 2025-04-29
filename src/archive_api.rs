@@ -231,7 +231,11 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
                                 size: internal_details.size,
                                 md5: internal_details.md5,
                             }),
-                            Err(_) => None, // Skip files that don't match the expected structure
+                            Err(e) => {
+                                // Print error to stderr for debugging during tests
+                                eprintln!("Error parsing file details for '{}': {}", name, e);
+                                None // Skip files that don't match the expected structure
+                            }
                         }
                     })
                     .collect()
