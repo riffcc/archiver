@@ -15,6 +15,8 @@ pub enum AppState {
     ViewingItem,
     /// Currently downloading an item (future state).
     Downloading, // Placeholder for later
+    /// Viewing/editing application settings.
+    SettingsView,
 }
 
 
@@ -58,6 +60,10 @@ pub struct App {
     pub download_status: Option<String>,
     /// Action requested by the user to be performed in the main loop
     pub pending_action: Option<UpdateAction>,
+    /// State for the settings list widget
+    pub settings_list_state: ListState,
+    /// Index of the currently selected setting (for editing)
+    pub selected_setting_index: usize,
 }
 
 /// Actions that the main loop should perform based on user input.
@@ -102,6 +108,8 @@ impl App {
             is_downloading: false,
             download_status: None,
             pending_action: None,
+            settings_list_state: ListState::default(),
+            selected_setting_index: 0, // Start with the first setting selected
         }
     }
 

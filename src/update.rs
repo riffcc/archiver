@@ -46,6 +46,7 @@ pub fn update(app: &mut App, key_event: KeyEvent) -> Option<UpdateAction> {
         AppState::Browsing => handle_browsing_input(app, key_event),
         AppState::AskingDownloadDir => handle_asking_download_dir_input(app, key_event), // This state implies filtering
         AppState::ViewingItem => handle_viewing_item_input(app, key_event),
+        AppState::SettingsView => handle_settings_view_input(app, key_event),
         AppState::Downloading => {} // Ignore input during download for now
     }
     // Return the pending action, if any was set
@@ -155,6 +156,16 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) {
         // Ignore input filtering keys while navigating
         KeyCode::Char(c) if c != 'i' && c != 'd' && c != 'q' => {} // Ignore other chars not handled above
         KeyCode::Backspace | KeyCode::Left | KeyCode::Right => {}
+        // Enter settings view
+        KeyCode::Char('s') => {
+             // Only allow entering settings from Browsing navigate mode for now
+             if app.current_state == AppState::Browsing && !app.is_filtering_input {
+                 app.current_state = AppState::SettingsView;
+                 app.settings_list_state.select(Some(app.selected_setting_index)); // Ensure selection matches index
+                 app.error_message = None; // Clear errors
+                 app.download_status = None; // Clear status
+             }
+        }
         // Esc and Quit keys are handled globally or by state handlers
         _ => {} // Ignore other keys
     }
@@ -250,6 +261,55 @@ fn handle_viewing_item_input(app: &mut App, key_event: KeyEvent) {
             }
         }
         _ => {} // Ignore other keys for now
+    }
+}
+
+/// Handles input when viewing/editing settings.
+fn handle_settings_view_input(app: &mut App, key_event: KeyEvent) {
+    let num_settings = 2; // Currently: Download Dir, Max Concurrent Downloads
+    match key_event.code {
+        KeyCode::Esc => {
+            // Exit settings view, return to browsing navigate mode
+            app.current_state = AppState::Browsing;
+            app.is_filtering_input = false;
+            app.error_message = None;
+            // Save settings on exit? Or require explicit save? Saving on exit for now.
+            if let Err(e) = settings::save_settings(&app.settings) {
+                app.error_message = Some(format!("Failed to save settings: {}", e));
+                // Revert to Browsing anyway
+            }
+        }
+        KeyCode::Down => {
+            app.selected_setting_index = (app.selected_setting_index + 1) % num_settings;
+            app.settings_list_state.select(Some(app.selected_setting_index));
+        }
+        KeyCode::Up => {
+            app.selected_setting_index = if app.selected_setting_index == 0 {
+                num_settings - 1
+            } else {
+                app.selected_setting_index - 1
+            };
+            app.settings_list_state.select(Some(app.selected_setting_index));
+        }
+        KeyCode::Right => {
+            // Increase concurrency limit
+            if app.selected_setting_index == 1 { // Index 1 is Max Concurrent Downloads
+                let current_limit = app.settings.max_concurrent_downloads.unwrap_or(1); // Default to 1 if None
+                app.settings.max_concurrent_downloads = Some(current_limit.saturating_add(1));
+            }
+            // TODO: Add handling for editing download dir (maybe Enter switches to input mode?)
+        }
+        KeyCode::Left => {
+            // Decrease concurrency limit
+            if app.selected_setting_index == 1 { // Index 1 is Max Concurrent Downloads
+                let current_limit = app.settings.max_concurrent_downloads.unwrap_or(1);
+                // Prevent going below 1
+                app.settings.max_concurrent_downloads = Some(current_limit.saturating_sub(1).max(1));
+            }
+             // TODO: Add handling for editing download dir
+        }
+        // TODO: Add Enter key to potentially switch to editing mode for download dir
+        _ => {} // Ignore other keys
     }
 }
 

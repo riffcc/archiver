@@ -8,9 +8,9 @@ use rust_tui_app::{
     update::update,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use reqwest::Client; // Add Client import
-use std::io;
-use tokio::sync::mpsc;
+use reqwest::Client;
+use std::{io, sync::Arc}; // Add Arc
+use tokio::sync::{mpsc, Semaphore}; // Add Semaphore
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,7 +26,12 @@ async fn main() -> Result<()> {
     // Create a channel for item details API results
     let (item_details_tx, mut item_details_rx) = mpsc::channel::<Result<ItemDetails>>(1);
     // Create a channel for download status updates
-    let (download_status_tx, mut download_status_rx) = mpsc::channel::<String>(10); // Increased buffer size
+    let (download_status_tx, mut download_status_rx) = mpsc::channel::<String>(10);
+
+    // --- Concurrency Limiter ---
+    // Use Arc for shared ownership across tasks
+    let max_downloads = app.settings.max_concurrent_downloads.unwrap_or(usize::MAX); // Use MAX if None (effectively unlimited)
+    let semaphore = Arc::new(Semaphore::new(max_downloads.max(1))); // Ensure at least 1 permit
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(io::stderr());
@@ -89,27 +94,41 @@ async fn main() -> Result<()> {
                                         app.error_message = None; // Clear previous error
                                         // Clone necessary data for the task
                                         let client = app.client.clone();
-                                        // Clone the sender *inside* the task to avoid moving the original
+                                        // Clone data needed *before* the permit acquisition task
+                                        let client_clone = client.clone();
+                                        let base_dir_clone = base_dir.clone();
+                                        let collection_clone = app.current_collection_name.clone().unwrap_or_default();
                                         let status_tx_clone = download_status_tx.clone();
-                                        let collection = app.current_collection_name.clone().unwrap_or_default(); // Use default if somehow unset
+                                        let semaphore_clone = Arc::clone(&semaphore); // Clone Arc pointer
 
                                         tokio::spawn(async move {
-                                            // Use the cloned sender inside the task
+                                            // Acquire semaphore permit before starting download logic
+                                            let permit = match semaphore_clone.acquire().await {
+                                                 Ok(p) => p,
+                                                 Err(_) => {
+                                                     // Semaphore closed, unlikely but handle
+                                                     let _ = status_tx_clone.send("Error: Download semaphore closed.".to_string()).await;
+                                                     return;
+                                                 }
+                                            };
+
+                                            // Now we have a permit, proceed with the download
                                             let result = match download_action {
-                                                DownloadAction::Item(id) => { // Use direct name
-                                                    download_item(&client, &base_dir, &collection, &id, status_tx_clone).await
+                                                DownloadAction::Item(id) => {
+                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, status_tx_clone.clone()).await
                                                 }
-                                                DownloadAction::File(id, file) => { // Use direct name
-                                                    download_single_file(&client, &base_dir, &collection, &id, &file, status_tx_clone).await
+                                                DownloadAction::File(id, file) => {
+                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, status_tx_clone.clone()).await
                                                 }
                                             };
-                                            // Download functions handle sending final status/errors via the channel.
-                                            // We only need to handle potential errors from the task itself if needed,
-                                            // but the download functions returning Result covers most cases.
-                                            // Remove the redundant error send below:
-                                            // if let Err(e) = result {
-                                            //      let _ = status_tx_clone.send(format!("Download Task Error: {}", e)).await;
-                                            // }
+
+                                            // Handle potential errors from the download functions themselves
+                                            if let Err(e) = result {
+                                                 let _ = status_tx_clone.send(format!("Download Task Error: {}", e)).await;
+                                            }
+
+                                            // Permit is automatically dropped here when the task finishes, releasing the semaphore slot
+                                            drop(permit);
                                         });
                                     } else {
                                          // Should be caught by update, but handle defensively
@@ -207,12 +226,32 @@ async fn download_single_file(
         file_details.name
     );
 
-    let _ = status_tx.send(format!("Downloading: {}", file_details.name)).await;
+    let _ = status_tx.send(format!("Checking: {}", file_details.name)).await;
 
     // Ensure target directory exists
     if let Some(parent_dir) = file_path.parent() {
         fs::create_dir_all(parent_dir).await.context("Failed to create download directory")?;
     }
+
+    // --- Idempotency Check ---
+    let expected_size_str = file_details.size.as_deref();
+    let expected_size: Option<u64> = expected_size_str.and_then(|s| s.parse().ok());
+
+    if let Some(expected) = expected_size {
+        if let Ok(metadata) = fs::metadata(&file_path).await {
+            if metadata.is_file() && metadata.len() == expected {
+                let _ = status_tx.send(format!("Skipping (exists): {}", file_details.name)).await;
+                return Ok(()); // File exists and size matches, skip download
+            }
+        }
+        // If metadata check fails or size mismatch, continue to download
+    } else {
+         // If expected size is unknown, download anyway (or log a warning?)
+         let _ = status_tx.send(format!("Warning: Unknown size for {}, downloading anyway", file_details.name)).await;
+    }
+    // --- End Idempotency Check ---
+
+     let _ = status_tx.send(format!("Downloading: {}", file_details.name)).await;
 
     // Make the request
     let response = client.get(&download_url).send().await.context("Failed to send download request")?;

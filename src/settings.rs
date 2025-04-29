@@ -4,13 +4,25 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 
 const QUALIFIER: &str = "com";
-const ORGANIZATION: &str = "Unknown"; // Consider changing this
-pub const APPLICATION: &str = "ArchiverTui"; // Your app's name - Made public
+const ORGANIZATION: &str = "riffcc"; // Updated organization
+pub const APPLICATION: &str = "archiver"; // Updated application name
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)] // Removed Default here
 pub struct Settings {
     pub download_directory: Option<String>,
+    pub max_concurrent_downloads: Option<usize>, // Add concurrency limit
 }
+
+// Implement Default manually to set a default concurrency
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            download_directory: None,
+            max_concurrent_downloads: Some(4), // Default to 4 concurrent downloads
+        }
+    }
+}
+
 
 /// Returns the path to the configuration file.
 fn get_config_path() -> Result<PathBuf> {

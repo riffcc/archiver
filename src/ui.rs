@@ -315,8 +315,11 @@ fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
     } else if app.current_state == AppState::AskingDownloadDir {
         "Enter the full path for downloads. Esc to cancel."
     } else if app.current_state == AppState::ViewingItem {
-        "Viewing item details. Esc: Back, ↑/↓: Files, Enter/d: Download File" // Updated hint
-    } else if app.is_filtering_input {
+        "Viewing item details. Esc: Back, ↑/↓: Files, Enter/d: Download File"
+    } else if app.current_state == AppState::SettingsView {
+         "Editing Settings. Esc: Save & Back, ↑/↓: Select, ←/→: Adjust Concurrency" // Hint for settings
+    }
+     else if app.is_filtering_input {
         "Filtering Input. Press Esc to navigate list, Enter to search."
     } else {
         "Navigating List. Press 'q' to quit, 'i' to filter, Enter to view, 'd' to download item." // Updated hint
