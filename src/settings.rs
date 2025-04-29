@@ -122,7 +122,10 @@ mod tests {
          let mock_home = temp_dir.path().to_path_buf();
          env::set_var("HOME", mock_home.to_str().unwrap());
 
-         let settings_to_save = Settings { download_directory: Some("test_dir".to_string()) };
+         let settings_to_save = Settings {
+             download_directory: Some("test_dir".to_string()),
+             max_concurrent_downloads: Some(5), // Initialize the new field
+         };
          save_settings(&settings_to_save).unwrap();
 
          let expected_config_path = config_dir_base.join(APPLICATION).join("settings.toml");

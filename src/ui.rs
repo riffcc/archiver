@@ -43,8 +43,9 @@ fn render_input(app: &mut App, frame: &mut Frame, area: Rect) {
     let (input_prompt, mut block_title) = match app.current_state {
          AppState::Browsing => ("> ", "Collection Name"),
          AppState::AskingDownloadDir => ("Enter Path: ", "Set Download Directory (Enter to save, Esc to cancel)"),
-         AppState::ViewingItem => ("", "Collection Filter"), // Input not active, show default title
-         AppState::Downloading => ("> ", "Collection Name"), // Or maybe disable input?
+         AppState::ViewingItem => ("", "Collection Filter"), // Input not active
+         AppState::Downloading => ("> ", "Collection Name"), // Input not active
+         AppState::SettingsView => ("", "Settings"), // Input not active in settings view
      };
 
     // Modify title based on filtering mode only when Browsing
@@ -205,12 +206,11 @@ fn render_metadata_pane(app: &App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    // Use `if let Some(details) = ...` and then use `details` inside the block.
-    // The previous `_details` prefix was likely causing the warning.
-    if let Some(details) = &app.current_item_details {
+    // Prefix `details` with `_` as it's not directly used after the `if let`.
+    if let Some(_details) = &app.current_item_details {
         let mut lines = Vec::new(); // Changed to Vec<Line>
 
-        // Use the `details` variable directly
+        // Use app.current_item_details directly below where needed
         let details = app.current_item_details.as_ref().unwrap(); // Safe to unwrap due to if let
 
         lines.push(Line::from(vec![
@@ -273,7 +273,11 @@ fn render_file_list_pane(app: &mut App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    if let Some(details) = &app.current_item_details {
+    // Prefix `details` with `_` as it's not directly used after the `if let`.
+    if let Some(_details) = &app.current_item_details {
+        // Use app.current_item_details directly below where needed
+        let details = app.current_item_details.as_ref().unwrap(); // Safe to unwrap due to if let
+
         if details.files.is_empty() {
             let empty_msg = Paragraph::new("No files found for this item.")
                 .style(Style::default().fg(Color::DarkGray))
