@@ -450,8 +450,7 @@ mod tests {
     use super::*;
     use crate::app::{ActivePane, App, AppState}; // Add ActivePane
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::{env, fs};
-    use tempfile::tempdir;
+    // Removed unused imports: std::{env, fs}, tempfile::tempdir
 
     // Helper for setting up test environment with mock config
     // Note: This helper doesn't need to interact with the actual config file system anymore,

@@ -7,7 +7,7 @@ const QUALIFIER: &str = "com";
 const ORGANIZATION: &str = "riffcc"; // Updated organization
 pub const APPLICATION: &str = "archiver"; // Updated application name
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)] // Added PartialEq
 pub struct Settings {
     pub download_directory: Option<String>,
     /// Max concurrent file downloads *within* a single item/collection download task.
