@@ -202,8 +202,11 @@ async fn main() -> Result<()> {
                  // if it's part of a larger bulk download. Resetting only on CollectionCompleted or Error.
 
                  // Update App state based on progress message
-                 // Removed extra closing brace that was here
                  match status {
+                      DownloadProgress::CollectionInfo(total) => {
+                         app.total_items_to_download = Some(total);
+                         // Keep existing status message or update if desired
+                     }
                      DownloadProgress::ItemStarted(id) => {
                          app.download_status = Some(format!("Starting: {}", id));
                      }
@@ -393,6 +396,8 @@ async fn download_collection(
     }
 
     let total_items = all_identifiers.len();
+    // Send the total count back to the main thread *before* queueing
+    let _ = progress_tx.send(DownloadProgress::CollectionInfo(total_items)).await;
     let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} items for: {}", total_items, collection))).await;
 
     let mut join_handles = vec![];

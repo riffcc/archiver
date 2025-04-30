@@ -106,6 +106,8 @@ pub enum DownloadAction {
 /// Represents progress updates sent from download tasks.
 #[derive(Debug, Clone)]
 pub enum DownloadProgress {
+    /// Information about the collection download starting.
+    CollectionInfo(usize), // total items
     /// Started processing an item.
     ItemStarted(String),
     /// Determined the number of files for an item.
