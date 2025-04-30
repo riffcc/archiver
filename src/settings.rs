@@ -74,21 +74,24 @@ mod tests {
     // Helper to set up a temporary config directory for tests
     fn setup_test_env() -> (tempfile::TempDir, PathBuf) {
         let temp_dir = tempdir().unwrap();
-        let config_dir = temp_dir.path().join(".config").join(APPLICATION);
-        fs::create_dir_all(&config_dir).unwrap();
-
-        // Mock the config directory path for the test duration
-        // Note: This relies on internal details of `get_config_path` using ProjectDirs.
-        // A more robust approach might involve dependency injection for the path.
-        // For simplicity, we'll assume this works for now.
-        // We need to simulate the structure ProjectDirs expects.
         let mock_home = temp_dir.path().to_path_buf();
-        env::set_var("HOME", mock_home.to_str().unwrap()); // For Linux/macOS simulation
-                                                           // Add similar vars for Windows if needed (`APPDATA`, `USERPROFILE`)
+        // Set HOME environment variable *before* calling ProjectDirs
+        env::set_var("HOME", mock_home.to_str().unwrap());
 
-        (temp_dir, config_dir.join("settings.toml"))
+        // Use ProjectDirs to find the config directory based on the mocked HOME
+        // This ensures we use the platform-correct path (e.g., Library/Application Support on macOS)
+        let proj_dirs = ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
+            .expect("Could not find project directories in test setup");
+        let config_dir = proj_dirs.config_dir();
+
+        // Note: We don't need fs::create_dir_all here because get_config_path()
+        //       which is called by save_settings() already does this.
+
+        // Calculate the expected config file path
+        let config_file_path = config_dir.join("settings.toml");
+
+        (temp_dir, config_file_path) // Return handle and the *correct* expected path
     }
-
 
     #[test]
     fn test_load_settings_default() {
