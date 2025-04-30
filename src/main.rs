@@ -490,6 +490,7 @@ async fn download_collection(
         let progress_tx_clone = progress_tx.clone();
         let semaphore_clone = Arc::clone(&semaphore); // Pass file semaphore down
         let item_id_clone = item_id.clone(); // Keep clone for task
+        let collection_id_clone = collection_id.to_string(); // Clone collection ID for task
 
         let handle = tokio::spawn(async move {
             // download_item handles fetching details and spawning file downloads
@@ -497,7 +498,7 @@ async fn download_collection(
             let item_result = download_item(
                 &client_clone,
                 &base_dir_clone,
-                Some(&collection_id_clone), // Pass collection ID context
+                Some(&collection_id_clone), // Pass collection ID context (now cloned)
                 &item_id_clone,
                 progress_tx_clone.clone(),
                 semaphore_clone, // Pass file semaphore
