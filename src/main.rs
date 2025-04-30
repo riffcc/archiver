@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
+use log::{error, info, warn, LevelFilter}; // Import log macros and LevelFilter
 use rust_tui_app::{
-    app::{App, DownloadAction, DownloadProgress, UpdateAction}, // Removed AppState
+    app::{App, DownloadAction, DownloadProgress, UpdateAction},
     archive_api::{self, ArchiveDoc, ItemDetails}, // Removed FileDetails
     event::{Event, EventHandler},
     settings, // Removed self, Settings
@@ -9,13 +10,59 @@ use rust_tui_app::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use reqwest::Client;
-use std::{io, sync::Arc, time::Instant}; // Add Instant
+use simplelog::{CombinedLogger, Config, TermLogger, WriteLogger, TerminalMode, ColorChoice}; // Import simplelog items
+use std::{fs::File, io, path::Path, sync::Arc, time::Instant}; // Add File, Path
 use tokio::sync::{mpsc, Semaphore};
+/// Initializes the logger. Logs to `/var/log/riffarchiver.log`.
+/// Falls back to terminal logging if file logging fails.
+fn initialize_logging() -> Result<()> {
+    let log_path = Path::new("/var/log/riffarchiver.log");
+
+    // Attempt to create/open the log file
+    let log_file_result = File::create(log_path);
+
+    match log_file_result {
+        Ok(log_file) => {
+            CombinedLogger::init(vec![
+                // Log INFO level and above to the file
+                WriteLogger::new(LevelFilter::Info, Config::default(), log_file),
+                // Log WARN level and above to the terminal
+                TermLogger::new(LevelFilter::Warn, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
+            ])?;
+            info!("File logging initialized successfully to: {}", log_path.display());
+        }
+        Err(e) => {
+            // If file logging fails, fall back to terminal-only logging
+            TermLogger::init(LevelFilter::Info, Config::default(), TerminalMode::Mixed, ColorChoice::Auto)?;
+            warn!(
+                "Failed to create/open log file at '{}': {}. Falling back to terminal logging.",
+                log_path.display(),
+                e
+            );
+            warn!("Ensure the directory exists and the application has write permissions.");
+        }
+    }
+    Ok(())
+}
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize logging first.
+    initialize_logging().context("Failed to initialize logging")?;
+    info!("Application starting up.");
+
+
     // Load settings first.
-    let settings = settings::load_settings()?;
+    let settings = match settings::load_settings() {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to load settings: {}", e);
+            // Use default settings if loading fails
+            warn!("Using default settings due to loading error.");
+            settings::Settings::default()
+        }
+    };
 
     // Create an application and load settings into it.
     let mut app = App::new();
@@ -38,7 +85,13 @@ async fn main() -> Result<()> {
     let terminal = Terminal::new(backend)?;
     let events = EventHandler::new(250); // Tick rate 250ms
     let mut tui = Tui::new(terminal, events);
-    tui.init()?;
+    if let Err(e) = tui.init() {
+        error!("Failed to initialize TUI: {}", e);
+        // Attempt to restore terminal before exiting
+        let _ = tui.exit(); // Ignore error during exit attempt
+        return Err(e.context("TUI initialization failed"));
+    }
+    info!("TUI initialized successfully.");
 
     // Start the main loop.
     while app.running {
@@ -141,13 +194,16 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 UpdateAction::SaveSettings => {
-                                     // Triggered after adding/removing collection or exiting settings
-                                     if let Err(e) = settings::save_settings(&app.settings) {
-                                         app.error_message = Some(format!("Failed to save settings: {}", e));
-                                     } else {
-                                         // Optional: Show confirmation? Status bar might be enough.
-                                         // app.download_status = Some("Settings saved.".to_string());
-                                     }
+                                    // Triggered after adding/removing collection or exiting settings
+                                    if let Err(e) = settings::save_settings(&app.settings) {
+                                        let err_msg = format!("Failed to save settings: {}", e);
+                                        error!("{}", err_msg); // Log the error
+                                        app.error_message = Some(err_msg);
+                                    } else {
+                                        info!("Settings saved successfully.");
+                                        // Optional: Show confirmation? Status bar might be enough.
+                                        // app.download_status = Some("Settings saved.".to_string());
+                                    }
                                 }
                             }
                         }
@@ -173,10 +229,12 @@ async fn main() -> Result<()> {
                     }
                     Err(e) => {
                         // Error fetching items for the selected collection
+                        let err_msg = format!("Error fetching items: {}", e);
+                        error!("{}", err_msg); // Log the error
                         app.items.clear();
                         app.total_items_found = None;
                         app.item_list_state.select(None);
-                        app.error_message = Some(format!("Error fetching items: {}", e));
+                        app.error_message = Some(err_msg);
                     }
                 }
             }
@@ -195,9 +253,11 @@ async fn main() -> Result<()> {
                         app.error_message = None; // Clear error on success
                     }
                     Err(e) => {
+                        let err_msg = format!("Error fetching item details: {}", e);
+                        error!("{}", err_msg); // Log the error
                         app.current_item_details = None; // Clear details on error
                         app.file_list_state.select(None); // Reset file selection
-                        app.error_message = Some(format!("Error fetching item details: {}", e));
+                        app.error_message = Some(err_msg);
                     }
                 }
             }
@@ -240,12 +300,13 @@ async fn main() -> Result<()> {
                          app.download_status = Some(format!("Collection download finished. Items: {} attempted, {} failed.", total, failed));
                      }
                      DownloadProgress::Error(msg) => {
+                         error!("Download Progress Error: {}", msg); // Log the error
                          app.is_downloading = false; // Stop on major error
                          app.download_start_time = None; // Clear start time
                          app.error_message = Some(msg.clone()); // Show as main error
                          app.download_status = Some(format!("Error: {}", msg));
                      }
-                      DownloadProgress::Status(msg) => {
+                     DownloadProgress::Status(msg) => {
                          // General status update
                          app.download_status = Some(msg);
                      }
@@ -255,7 +316,14 @@ async fn main() -> Result<()> {
     }
 
     // Exit the user interface.
-    tui.exit()?;
+    if let Err(e) = tui.exit() {
+        error!("Failed to exit TUI cleanly: {}", e);
+        // Continue shutdown despite TUI exit error
+    } else {
+        info!("TUI exited successfully.");
+    }
+
+    info!("Application shutting down.");
     Ok(())
 }
 
