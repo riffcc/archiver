@@ -164,6 +164,8 @@ fn handle_browsing_input_navigate_mode(app: &mut App, key_event: KeyEvent) {
                  app.is_filtering_input = true; // Asking for dir implies filtering input
              } else if !app.items.is_empty() {
                  // Directory is set, trigger download for the collection
+                 // Set the total count immediately using the known value
+                 app.total_items_to_download = app.total_items_found; // Use existing total
                  app.pending_action = Some(UpdateAction::StartDownload(DownloadAction::Collection));
                  app.download_status = Some(format!("Queueing bulk download for collection: {}", app.current_collection_name.as_deref().unwrap_or("Unknown")));
              } else {
