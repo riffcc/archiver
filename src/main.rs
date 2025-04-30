@@ -93,7 +93,8 @@ async fn main() -> Result<()> {
                                         app.is_downloading = true;
                                         app.error_message = None; // Clear previous error
                                         // Reset progress counters for new download operation
-                                        app.total_items_to_download = None;
+                                        // DO NOT reset total_items_to_download here, it's set in update() for bulk downloads
+                                        // app.total_items_to_download = None;
                                         app.items_downloaded_count = 0;
                                         app.total_files_to_download = None;
                                         app.files_downloaded_count = 0;
