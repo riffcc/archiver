@@ -372,8 +372,11 @@ fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
 fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
     let status_text = if app.is_downloading {
         // Format progress string if downloading
-        let item_progress = app.total_items_to_download.map_or("?".to_string(), |t| t.to_string());
-        let file_progress = app.total_files_to_download.map_or("?".to_string(), |t| t.to_string());
+        let item_progress = app.total_items_to_download.map_or_else(
+            || "Calculating...".to_string(), // Show calculating if total is None
+            |t| t.to_string()
+        );
+        let file_progress = app.total_files_to_download.map_or("?".to_string(), |t| t.to_string()); // Keep '?' for files for now
         format!(
             "Downloading [Items: {}/{} | Files: {}/{}] Last: {}",
             app.items_downloaded_count,
