@@ -223,7 +223,8 @@ fn render_metadata_pane(app: &App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    // Use `details` directly from the `if let` binding.
+    // Use `details` directly from the `if let` binding and allow unused warning.
+    #[allow(unused_variables)] // Silence potential spurious warning
     if let Some(details) = &app.current_item_details {
         let mut lines = Vec::new(); // Changed to Vec<Line>
 
