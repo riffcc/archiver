@@ -252,8 +252,8 @@ fn render_metadata_pane(app: &App, frame: &mut Frame, area: Rect) {
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    // Prefix `details` with `_` and re-bind inside to silence warning.
-    if let Some(_details) = &app.current_item_details {
+    // Use the details if available
+    if let Some(details) = &app.current_item_details { // Removed underscore from pattern
         let mut lines = Vec::new(); // Changed to Vec<Line>
 
         // Use app.current_item_details directly below where needed

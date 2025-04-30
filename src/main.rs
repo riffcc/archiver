@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use rust_tui_app::{
-    app::{App, AppState, DownloadAction, DownloadProgress, UpdateAction}, // Add AppState
-    archive_api::{self, ArchiveDoc, FileDetails, ItemDetails}, // Add FileDetails
+    app::{App, DownloadAction, DownloadProgress, UpdateAction}, // Removed AppState
+    archive_api::{self, ArchiveDoc, ItemDetails}, // Removed FileDetails
     event::{Event, EventHandler},
-    settings::{self, Settings}, // Import Settings struct
+    settings, // Removed self, Settings
     tui::Tui,
     update::update,
 };

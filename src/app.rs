@@ -155,14 +155,27 @@ pub enum DownloadProgress {
 
 impl App {
     /// Constructs a new instance of [`App`].
+use std::time::Duration; // Add Duration
+
+// ... other imports
+
+impl App {
+    /// Constructs a new instance of [`App`].
     pub fn new() -> Self {
+        // Configure Reqwest client with timeouts
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30)) // General request timeout
+            .connect_timeout(Duration::from_secs(30)) // Connection timeout
+            .build()
+            .unwrap_or_else(|_| Client::new()); // Fallback to default if builder fails
+
         Self {
             running: true,
             // Removed: collection_input, is_filtering_input
             items: Vec::new(),
             collection_list_state: ListState::default(), // Initialize collection list state
             item_list_state: ListState::default(), // Rename list_state to item_list_state
-            client: Client::new(),
+            client, // Use the configured client
             error_message: None,
             is_loading: false,
             // Initialize with default state and settings (will be loaded properly in main)
