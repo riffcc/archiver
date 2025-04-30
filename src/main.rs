@@ -116,15 +116,15 @@ async fn main() -> Result<()> {
                                             // Proceed with the download action directly
                                             let result = match download_action {
                                                 DownloadAction::ItemAllFiles(id) => {
-                                                    // Pass semaphore down
-                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, progress_tx_clone.clone(), semaphore_clone).await
+                                                    // Removed semaphore argument from call
+                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, progress_tx_clone.clone()).await
                                                 }
                                                 DownloadAction::File(id, file) => {
-                                                    // Pass semaphore down
-                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, progress_tx_clone.clone(), semaphore_clone).await
+                                                    // Removed semaphore argument from call
+                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, progress_tx_clone.clone()).await
                                                 }
                                                 DownloadAction::Collection => {
-                                                     // Pass semaphore down (already done)
+                                                     // Pass semaphore down
                                                      download_collection(&client_clone, &base_dir_clone, &collection_clone, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                             };
