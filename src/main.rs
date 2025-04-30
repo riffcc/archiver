@@ -92,10 +92,11 @@ async fn main() -> Result<()> {
                                 }
                                 UpdateAction::StartDownload(download_action) => {
                                     // Triggered by 'd' or 'b' in various contexts
-                                    if app.is_downloading {
-                                        app.download_status = Some("Another download is already in progress.".to_string());
-                                    } else if let Some(base_dir) = app.settings.download_directory.clone() {
+                                    // Removed check: if app.is_downloading { ... }
+                                    if let Some(base_dir) = app.settings.download_directory.clone() {
                                         // Set downloading flag and reset progress
+                                        // Note: is_downloading is now slightly less accurate, as it's true
+                                        // if *any* download task is running. We might need more granular tracking later.
                                         app.is_downloading = true;
                                         app.error_message = None;
                                         app.items_downloaded_count = 0;
