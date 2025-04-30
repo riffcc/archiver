@@ -382,6 +382,7 @@ fn format_speed(bytes_per_sec: f64) -> String {
         format!("{:.1} KB/s", bytes_per_sec / KB)
     } else {
         format!("{:.0} B/s", bytes_per_sec)
+    } // <-- Add missing closing brace here
 }
 
 /// Renders the status bar at the bottom of the screen.
