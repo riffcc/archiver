@@ -454,26 +454,22 @@ mod tests {
     use tempfile::tempdir;
 
     // Helper for setting up test environment with mock config
-    fn setup_test_app_with_config() -> (App, tempfile::TempDir) {
-        let temp_dir = tempdir().unwrap();
-        let mock_home = temp_dir.path().to_path_buf();
-        env::set_var("HOME", mock_home.to_str().unwrap());
-
-        let config_dir = temp_dir.path().join(".config").join(crate::settings::APPLICATION);
-        fs::create_dir_all(&config_dir).unwrap();
-
+    // Note: This helper doesn't need to interact with the actual config file system anymore,
+    // as App::load_settings uses the default path logic which is tested separately in settings::tests.
+    // We just need an App instance with some initial settings for UI interaction tests.
+    fn setup_test_app() -> App {
         let mut app = App::new();
-        // Load settings (will be default as file doesn't exist yet)
-        app.load_settings(crate::settings::load_settings().unwrap());
-        // Add some initial favorite collections for testing
+        // Set some initial settings directly for testing UI logic
         app.settings.favorite_collections = vec!["coll1".to_string(), "coll2".to_string(), "coll3".to_string()];
+        app.settings.download_directory = Some("/fake/test/dir".to_string()); // Assume a dir is set for some tests
         app.collection_list_state.select(Some(0)); // Pre-select first collection
-        (app, temp_dir)
+        app
     }
 
+    // Update tests to use the simplified setup helper
     #[test]
     fn test_update_quit_keys() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         assert!(app.running);
 
         // Test 'q' in Browsing
@@ -494,7 +490,7 @@ mod tests {
 
     #[test]
     fn test_update_tab_switches_panes_in_browsing() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::Browsing;
         app.active_pane = ActivePane::Collections;
 
@@ -507,7 +503,7 @@ mod tests {
 
     #[test]
     fn test_update_collection_pane_navigation() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::Browsing;
         app.active_pane = ActivePane::Collections;
         app.collection_list_state.select(Some(0)); // Start at first
@@ -535,7 +531,7 @@ mod tests {
 
      #[test]
     fn test_update_item_pane_navigation() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::Browsing;
         app.active_pane = ActivePane::Items; // Focus items pane
         app.items = vec![ // Add some dummy items
@@ -563,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_update_collection_pane_enter_loads_items() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::Browsing;
         app.active_pane = ActivePane::Collections;
         app.collection_list_state.select(Some(1)); // Select "coll2"
@@ -581,7 +577,7 @@ mod tests {
 
      #[test]
     fn test_update_collection_pane_delete_removes_item_and_saves() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::Browsing;
         app.active_pane = ActivePane::Collections;
         app.collection_list_state.select(Some(1)); // Select "coll2"
@@ -598,7 +594,7 @@ mod tests {
 
      #[test]
     fn test_update_collection_pane_delete_removes_last_item() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::Browsing;
         app.active_pane = ActivePane::Collections;
         app.collection_list_state.select(Some(2)); // Select "coll3" (last item)
@@ -616,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_update_collection_pane_a_enters_adding_state() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::Browsing;
         app.active_pane = ActivePane::Collections;
 
@@ -630,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_update_adding_collection_input_and_save() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::AddingCollection;
         assert_eq!(app.settings.favorite_collections.len(), 3);
 
@@ -656,7 +652,7 @@ mod tests {
 
      #[test]
     fn test_update_adding_collection_esc_cancels() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::AddingCollection;
         app.add_collection_input = "partial".to_string();
 
@@ -670,7 +666,7 @@ mod tests {
 
     #[test]
     fn test_update_settings_navigation_and_adjustment() {
-        let (mut app, _temp_dir) = setup_test_app_with_config();
+        let mut app = setup_test_app();
         app.current_state = AppState::SettingsView;
         app.selected_setting_index = 0; // Start at Download Dir
         app.settings_list_state.select(Some(0));

@@ -41,25 +41,42 @@ fn get_config_path() -> Result<PathBuf> {
     Ok(config_dir.join("settings.toml"))
 }
 
-/// Loads settings from the configuration file.
+/// Loads settings from the default configuration file path.
 /// If the file doesn't exist, returns default settings.
 pub fn load_settings() -> Result<Settings> {
     let config_path = get_config_path()?;
+    load_settings_from_path(&config_path)
+}
+
+/// Saves the given settings to the default configuration file path.
+pub fn save_settings(settings: &Settings) -> Result<()> {
+    let config_path = get_config_path()?;
+    save_settings_to_path(settings, &config_path)
+}
+
+
+/// Loads settings from the specified configuration file path.
+/// If the file doesn't exist, returns default settings.
+fn load_settings_from_path(config_path: &PathBuf) -> Result<Settings> {
     if !config_path.exists() {
         return Ok(Settings::default()); // Return default if no config file
     }
 
     let settings = config::Config::builder()
-        .add_source(config::File::from(config_path))
+        .add_source(config::File::from(config_path.clone())) // Clone path for File source
         .build()?
         .try_deserialize::<Settings>()?;
 
     Ok(settings)
 }
 
-/// Saves the given settings to the configuration file.
-pub fn save_settings(settings: &Settings) -> Result<()> {
-    let config_path = get_config_path()?;
+/// Saves the given settings to the specified configuration file path.
+/// Ensures the parent directory exists.
+fn save_settings_to_path(settings: &Settings, config_path: &PathBuf) -> Result<()> {
+    // Ensure the parent directory exists before writing
+    if let Some(parent_dir) = config_path.parent() {
+        fs::create_dir_all(parent_dir)?;
+    }
     let toml_string = toml::to_string_pretty(settings)?;
     fs::write(config_path, toml_string)?;
     Ok(())
@@ -94,10 +111,12 @@ mod tests {
     }
 
     #[test]
-    fn test_load_settings_default() {
-        let _temp_dir = setup_test_env(); // Keep temp_dir alive
-        let settings = load_settings().unwrap();
+    fn test_load_settings_default_from_specific_path() {
+        let (_temp_dir, config_path) = setup_test_env(); // Keep temp_dir alive
+        // Load from the specific (non-existent) path
+        let settings = load_settings_from_path(&config_path).unwrap();
         assert_eq!(settings.download_directory, None);
+        assert_eq!(settings, Settings::default()); // Ensure all defaults match
     }
 
     #[test]
@@ -106,22 +125,29 @@ mod tests {
 
         let mut settings_to_save = Settings::default();
         settings_to_save.download_directory = Some("/tmp/downloads".to_string());
+        settings_to_save.max_concurrent_downloads = Some(10);
+        settings_to_save.favorite_collections = vec!["test_coll".to_string()];
 
-        save_settings(&settings_to_save).unwrap();
+        // Save to the specific path
+        save_settings_to_path(&settings_to_save, &config_path).unwrap();
         assert!(config_path.exists());
 
-        let loaded_settings = load_settings().unwrap();
+        // Load from the specific path
+        let loaded_settings = load_settings_from_path(&config_path).unwrap();
         assert_eq!(loaded_settings.download_directory, Some("/tmp/downloads".to_string()));
+        assert_eq!(loaded_settings.max_concurrent_downloads, Some(10));
+        assert_eq!(loaded_settings.favorite_collections, vec!["test_coll".to_string()]);
     }
 
      #[test]
-    fn test_load_settings_file_not_found_returns_default() {
+    fn test_load_settings_file_not_found_returns_default_from_specific_path() {
          // Ensure no real config interferes
-         let _temp_dir = setup_test_env();
-         // Don't save anything, just try loading
-         let settings = load_settings().unwrap();
+         let (_temp_dir, config_path) = setup_test_env();
+         // Don't save anything, just try loading from the specific path
+         let settings = load_settings_from_path(&config_path).unwrap();
          assert_eq!(settings.download_directory, None);
          assert!(settings.download_directory.is_none()); // Double check
+         assert_eq!(settings.max_concurrent_downloads, Some(4)); // Check another default
      }
 
      #[test]
@@ -145,10 +171,10 @@ mod tests {
              favorite_collections: vec!["coll1".to_string(), "coll2".to_string()],
              max_concurrent_collections: Some(2),
          };
-         // This call should create the directory via get_config_path() and write the file
-         save_settings(&settings_to_save).unwrap();
+         // This call should create the directory and write the file to the specific path
+         save_settings_to_path(&settings_to_save, &expected_config_path).unwrap();
 
-         // Assert that save_settings created the file and its parent directory
+         // Assert that save_settings_to_path created the file and its parent directory
          assert!(expected_config_path.exists(), "Config file should be created at {:?}", expected_config_path);
          assert!(expected_config_path.parent().unwrap().exists(), "Config directory should be created at {:?}", expected_config_dir);
      }
