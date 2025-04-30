@@ -9,8 +9,8 @@ use rust_tui_app::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use reqwest::Client;
-use std::{io, sync::Arc}; // Add Arc
-use tokio::sync::{mpsc, Semaphore}; // Add Semaphore
+use std::{io, sync::Arc, time::Instant}; // Add Instant
+use tokio::sync::{mpsc, Semaphore};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -90,14 +90,16 @@ async fn main() -> Result<()> {
                                     if app.is_downloading {
                                         app.download_status = Some("Another download is already in progress.".to_string());
                                     } else if let Some(base_dir) = app.settings.download_directory.clone() {
-                                        app.is_downloading = true;
+                                        app.is_downloading = true; // Set downloading flag
                                         app.error_message = None; // Clear previous error
                                         // Reset progress counters for new download operation
-                                        // DO NOT reset total_items_to_download here, it's set in update() for bulk downloads
+                                        // total_items_to_download is set in update() for bulk downloads
                                         // app.total_items_to_download = None;
                                         app.items_downloaded_count = 0;
                                         app.total_files_to_download = None;
                                         app.files_downloaded_count = 0;
+                                        app.total_bytes_downloaded = 0; // Reset bytes
+                                        app.download_start_time = Some(Instant::now()); // Record start time
 
                                         // Clone necessary data for the task
                                         let client = app.client.clone();
@@ -213,11 +215,15 @@ async fn main() -> Result<()> {
                      }
                      DownloadProgress::ItemFileCount(count) => {
                          app.total_files_to_download = Some(app.total_files_to_download.unwrap_or(0) + count);
-                         app.download_status = Some(format!("Found {} files...", count)); // Update status briefly
+                         app.download_status = Some(format!("Found {} files...", count));
+                     }
+                     DownloadProgress::BytesDownloaded(bytes) => {
+                         app.total_bytes_downloaded += bytes;
+                         // Don't update status string for every chunk, too noisy
                      }
                      DownloadProgress::FileCompleted(filename) => {
                          app.files_downloaded_count += 1;
-                         app.download_status = Some(format!("Done: {}", filename)); // Update status briefly
+                         app.download_status = Some(format!("Done: {}", filename));
                      }
                      DownloadProgress::ItemCompleted(id, success) => {
                          app.items_downloaded_count += 1;
@@ -226,10 +232,12 @@ async fn main() -> Result<()> {
                      }
                      DownloadProgress::CollectionCompleted(total, failed) => {
                          app.is_downloading = false; // Collection finished
+                         app.download_start_time = None; // Clear start time
                          app.download_status = Some(format!("Collection download finished. Items: {} attempted, {} failed.", total, failed));
                      }
                      DownloadProgress::Error(msg) => {
                          app.is_downloading = false; // Stop on major error
+                         app.download_start_time = None; // Clear start time
                          app.error_message = Some(msg.clone()); // Show as main error
                          app.download_status = Some(format!("Error: {}", msg));
                      }
@@ -321,6 +329,8 @@ async fn download_single_file(
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.context("Failed to read download chunk")?;
         dest.write_all(&chunk).await.context("Failed to write chunk to file")?;
+        // Send byte count update
+        let _ = progress_tx.send(DownloadProgress::BytesDownloaded(chunk.len() as u64)).await;
     }
 
     // Send completion via progress channel

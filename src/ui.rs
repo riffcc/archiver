@@ -370,17 +370,47 @@ fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
 
 
 fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
+fn format_speed(bytes_per_sec: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    if bytes_per_sec >= GB {
+        format!("{:.2} GB/s", bytes_per_sec / GB)
+    } else if bytes_per_sec >= MB {
+        format!("{:.2} MB/s", bytes_per_sec / MB)
+    } else if bytes_per_sec >= KB {
+        format!("{:.1} KB/s", bytes_per_sec / KB)
+    } else {
+        format!("{:.0} B/s", bytes_per_sec)
+    }
+}
+
+fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
     let status_text = if app.is_downloading {
+        // Calculate speed if start time is available
+        let speed_str = if let Some(start_time) = app.download_start_time {
+            let elapsed = start_time.elapsed().as_secs_f64();
+            if elapsed > 0.1 { // Avoid division by zero or tiny elapsed times
+                let speed = app.total_bytes_downloaded as f64 / elapsed;
+                format!(" ({})", format_speed(speed))
+            } else {
+                "".to_string() // Not enough time elapsed yet
+            }
+        } else {
+            "".to_string() // Start time not set yet
+        };
+
         // Format progress string if downloading
-        // Revert "Calculating..." as total should be set when is_downloading becomes true
         let item_progress = app.total_items_to_download.map_or("?".to_string(), |t| t.to_string());
         let file_progress = app.total_files_to_download.map_or("?".to_string(), |t| t.to_string());
         format!(
-            "Downloading [Items: {}/{} | Files: {}/{}] Last: {}",
+            "Downloading [Items: {}/{} | Files: {}/{}{}]: {}", // Added speed, changed Last: to :
             app.items_downloaded_count,
             item_progress,
             app.files_downloaded_count,
             file_progress,
+            speed_str, // Include speed string
             app.download_status.as_deref().unwrap_or("...") // Show last status message
         )
     } else if let Some(status) = &app.download_status {

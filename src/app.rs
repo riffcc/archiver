@@ -1,8 +1,9 @@
 use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
 use crate::settings::Settings;
+use crate::settings::Settings;
 use ratatui::widgets::ListState;
-use std::path::PathBuf; // For constructing download paths
 use reqwest::Client;
+use std::{path::PathBuf, time::Instant}; // Add Instant
 
 /// Represents the different states or modes the application can be in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +75,11 @@ pub struct App {
     pub total_files_to_download: Option<usize>,
      /// Number of files completed in the current bulk operation
     pub files_downloaded_count: usize,
+    /// Total bytes downloaded in the current operation
+    pub total_bytes_downloaded: u64,
+    /// Start time of the current download operation
+    pub download_start_time: Option<Instant>,
+
 
     // --- Settings State ---
     /// State for the settings list widget
@@ -112,6 +118,8 @@ pub enum DownloadProgress {
     ItemStarted(String),
     /// Determined the number of files for an item.
     ItemFileCount(usize),
+    /// A chunk of bytes was downloaded for a file.
+    BytesDownloaded(u64),
     /// A single file download completed successfully.
     FileCompleted(String), // filename
     /// An item download finished (successfully or with partial failure).
@@ -154,6 +162,8 @@ impl App {
             items_downloaded_count: 0,
             total_files_to_download: None,
             files_downloaded_count: 0,
+            total_bytes_downloaded: 0,
+            download_start_time: None,
             settings_list_state: ListState::default(),
             selected_setting_index: 0, // Start with the first setting selected
             editing_setting_input: String::new(),
