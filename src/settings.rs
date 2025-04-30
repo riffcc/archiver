@@ -104,8 +104,9 @@ mod tests {
             .expect("Could not find project directories in test setup");
         let config_dir = proj_dirs.config_dir();
 
-        // Note: We don't need fs::create_dir_all here because get_config_path()
-        //       which is called by save_settings() already does this.
+        // Explicitly create the config directory here to ensure it exists for all tests.
+        fs::create_dir_all(config_dir)
+            .expect("Failed to create config directory in test setup");
 
         // Calculate the expected config file path
         let config_file_path = config_dir.join("settings.toml");
