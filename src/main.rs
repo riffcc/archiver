@@ -336,6 +336,7 @@ async fn main() -> Result<()> {
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use futures_util::StreamExt;
+use log::{debug, error, info, warn}; // Import log macros here too
 
 
 /// Downloads a single file.
@@ -349,6 +350,10 @@ async fn download_single_file(
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>,
 ) -> Result<()> {
+    let collection_str = collection_id.unwrap_or("<none>");
+    info!("Starting download_single_file: collection='{}', item='{}', file='{}'",
+          collection_str, item_id, file_details.name);
+
     // --- Idempotency Check ---
     // Construct path based on whether collection_id is present
     let file_path = match collection_id {
@@ -359,19 +364,32 @@ async fn download_single_file(
     let expected_size: Option<u64> = expected_size_str.and_then(|s| s.parse().ok());
 
     if let Some(expected) = expected_size {
-        if let Ok(metadata) = fs::metadata(&file_path).await {
-            if metadata.is_file() && metadata.len() == expected {
-                // Send FileCompleted immediately if skipped
-                let _ = progress_tx.send(DownloadProgress::FileCompleted(file_details.name.clone())).await;
-                // Also send a status message for clarity
-                let _ = progress_tx.send(DownloadProgress::Status(format!("Skipping (exists): {}", file_details.name))).await;
-                return Ok(()); // File exists and size matches, skip download - NO PERMIT USED
+        // Use tokio::fs::metadata here
+        match fs::metadata(&file_path).await {
+            Ok(metadata) => {
+                if metadata.is_file() && metadata.len() == expected {
+                    info!("Skipping existing file with matching size: '{}'", file_path.display());
+                    // Send FileCompleted immediately if skipped
+                    let _ = progress_tx.send(DownloadProgress::FileCompleted(file_details.name.clone())).await;
+                    // Also send a status message for clarity
+                    let _ = progress_tx.send(DownloadProgress::Status(format!("Skipping (exists): {}", file_details.name))).await;
+                    return Ok(()); // File exists and size matches, skip download - NO PERMIT USED
+                } else {
+                     debug!("Existing file found but size mismatch or not a file: '{}'. Proceeding with download.", file_path.display());
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                 debug!("File not found: '{}'. Proceeding with download.", file_path.display());
+            }
+            Err(e) => {
+                 warn!("Failed to get metadata for '{}': {}. Proceeding with download.", file_path.display(), e);
             }
         }
         // If metadata check fails or size mismatch, continue to acquire permit and download
     } else {
          // If expected size is unknown, we still need to acquire permit before checking/downloading
          // Log warning later if needed after acquiring permit
+         debug!("File size unknown for '{}'. Will acquire permit and download.", file_details.name);
     }
     // --- End Idempotency Check ---
 
@@ -379,12 +397,15 @@ async fn download_single_file(
     // Acquire permit *before* making network request or creating file.
     // The permit is stored in `_permit` and will be dropped automatically
     // when this function returns (success or error).
+    debug!("Attempting to acquire download permit for file: {}", file_details.name);
     let _permit = semaphore.acquire_owned().await.context("Failed to acquire download semaphore permit")?;
+    debug!("Acquired download permit for file: {}", file_details.name);
     // --- Permit Acquired ---
 
 
     // Log unknown size warning if necessary
     if expected_size.is_none() {
+        warn!("File size is unknown for '{}'. Downloading anyway.", file_details.name);
         let _ = progress_tx.send(DownloadProgress::Status(format!("Warning: Unknown size for {}, downloading anyway", file_details.name))).await;
     }
 
@@ -402,10 +423,12 @@ async fn download_single_file(
 
     // Ensure target directory exists
     if let Some(parent_dir) = file_path.parent() {
-        fs::create_dir_all(parent_dir).await.context("Failed to create download directory")?;
+        debug!("Ensuring download directory exists: {}", parent_dir.display());
+        fs::create_dir_all(parent_dir).await.context(format!("Failed to create download directory '{}'", parent_dir.display()))?;
+    } else {
+        error!("Could not determine parent directory for path: {}", file_path.display());
+        return Err(anyhow!("Invalid download file path: {}", file_path.display()));
     }
-
-    // Removed duplicate idempotency check block below
 
      let _ = progress_tx.send(DownloadProgress::Status(format!("Downloading: {}", file_details.name))).await;
 
@@ -447,20 +470,34 @@ async fn download_item(
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>,
 ) -> Result<()> {
+    let collection_str = collection_id.unwrap_or("<none>");
+    info!("Starting download_item: collection='{}', item='{}'", collection_str, item_id);
     let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
+
     // Fetch item details first to get the file list
-     let details = archive_api::fetch_item_details(client, item_id).await?;
+    let details = match archive_api::fetch_item_details(client, item_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            error!("Failed to fetch item details for '{}': {}. Skipping item download.", item_id, e);
+            let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to get details for {}: {}", item_id, e))).await;
+            let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), false)).await; // Mark as failed
+            return Err(e).context(format!("Failed fetching details for item '{}'", item_id));
+        }
+    };
 
      let total_files = details.files.len();
+     info!("Found {} files for item '{}'", total_files, item_id);
      let _ = progress_tx.send(DownloadProgress::ItemFileCount(total_files)).await;
 
 
      if details.files.is_empty() {
+         info!("No files found for item: {}. Marking as complete.", item_id);
          let _ = progress_tx.send(DownloadProgress::Status(format!("No files found for item: {}", item_id))).await;
          let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), true)).await; // Mark as completed (successfully, with 0 files)
          return Ok(());
      }
 
+     info!("Queueing {} files for item: {}", total_files, item_id);
      let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} files for item: {}", total_files, item_id))).await;
 
      // Create directory: base_dir / [collection_id] / item_id
@@ -468,7 +505,8 @@ async fn download_item(
         Some(c) => Path::new(base_dir).join(c).join(item_id),
         None => Path::new(base_dir).join(item_id),
      };
-     fs::create_dir_all(&item_dir).await.context("Failed to create item directory")?;
+     debug!("Ensuring item directory exists: {}", item_dir.display());
+     fs::create_dir_all(&item_dir).await.context(format!("Failed to create item directory '{}'", item_dir.display()))?;
 
      let mut file_join_handles = vec![];
      let mut item_failed = false; // Track if any file task fails
@@ -505,23 +543,31 @@ async fn download_item(
      // Wait for all file download tasks for this item to complete
      for handle in file_join_handles {
          match handle.await {
-             Ok(Ok(_)) => { /* File download task succeeded */ }
+             Ok(Ok(_)) => {
+                 debug!("File download task completed successfully for item '{}'.", item_id);
+             }
              Ok(Err(e)) => {
                  item_failed = true;
-                 // Error message already sent by download_single_file, but maybe log context here?
-                 let _ = progress_tx.send(DownloadProgress::Status(format!("File download failed within item {}: {}", item_id, e))).await;
+                 // Error already logged and sent by download_single_file, just log context here.
+                 error!("File download task failed within item {}: {}", item_id, e);
+                 // Optionally send another status update if needed, but Error should have been sent.
+                 // let _ = progress_tx.send(DownloadProgress::Status(format!("File download failed within item {}: {}", item_id, e))).await;
              }
              Err(e) => { // Task panicked or was cancelled
                  item_failed = true;
+                 error!("File download task panicked or was cancelled for item {}: {}", item_id, e);
                  let _ = progress_tx.send(DownloadProgress::Error(format!("File download task panicked for item {}: {}", item_id, e))).await;
              }
          }
      }
 
      // Send item completion status based on whether any file task failed
-     let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), !item_failed)).await;
+     let success_status = !item_failed;
+     info!("Finished processing item '{}'. Success: {}", item_id, success_status);
+     let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), success_status)).await;
 
-     Ok(()) // Return Ok even if some files failed, ItemCompleted indicates success/failure
+     // Return Ok even if some files failed, ItemCompleted indicates success/failure of the item overall
+     Ok(())
 }
 
 /// Downloads all items for a specific collection identifier.
@@ -532,26 +578,37 @@ async fn download_collection(
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>, // File download semaphore
 ) -> Result<()> {
+    info!("Starting download_collection for '{}'", collection_id);
     let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers for: {}", collection_id))).await;
 
     // --- Fetch ALL identifiers for the specified collection ---
-    let all_identifiers = archive_api::fetch_all_collection_identifiers(client, collection_id).await
-        .context(format!("Failed to fetch identifiers for collection '{}'", collection_id))?;
+    let all_identifiers = match archive_api::fetch_all_collection_identifiers(client, collection_id).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("Failed to fetch identifiers for collection '{}': {}", collection_id, e);
+            let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to get identifiers for {}: {}", collection_id, e))).await;
+            // Send CollectionCompleted with 0/0 since we couldn't even start
+            let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
+            return Err(e).context(format!("Failed fetching identifiers for collection '{}'", collection_id));
+        }
+    };
     // ---
 
     if all_identifiers.is_empty() {
+        info!("No items found in collection: {}. Download complete.", collection_id);
         let _ = progress_tx.send(DownloadProgress::Status(format!("No items found in collection: {}", collection_id))).await;
         let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
         return Ok(());
     }
 
     let total_items = all_identifiers.len();
+    info!("Found {} items to download for collection '{}'", total_items, collection_id);
     // Send total item count for this collection download
     let _ = progress_tx.send(DownloadProgress::CollectionInfo(total_items)).await;
     let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} items for collection: {}", total_items, collection_id))).await;
 
     let mut join_handles = vec![];
-    let mut total_failed_items = 0;
+    let mut total_failed_items = 0; // Count items where download_item itself returned Err or panicked
 
     // Iterate through identifiers and spawn item download tasks
     for item_id in all_identifiers.into_iter() {
@@ -581,17 +638,29 @@ async fn download_collection(
     }
 
     // Wait for all item download tasks for this collection to complete
+    info!("Waiting for {} item download tasks for collection '{}'...", join_handles.len(), collection_id);
     for handle in join_handles {
         match handle.await {
-            Ok(Ok(_)) => { /* Item processing (spawning files) succeeded */ }
-            Ok(Err(_)) => { total_failed_items += 1; } // download_item returned an error (e.g., failed to fetch details)
-            Err(_) => { total_failed_items += 1; } // Task panicked
+            Ok(Ok(_)) => {
+                debug!("Item download task completed successfully for collection '{}'.", collection_id);
+            }
+            Ok(Err(e)) => {
+                // Error should have been logged within download_item (e.g., failed details fetch)
+                error!("Item download task failed for collection '{}': {}", collection_id, e);
+                total_failed_items += 1;
+            }
+            Err(e) => { // Task panicked or was cancelled
+                error!("Item download task panicked or was cancelled for collection '{}': {}", collection_id, e);
+                total_failed_items += 1;
+            }
         }
         // Note: Individual file errors within an item are handled by download_item
         // and reflected in the ItemCompleted message's success flag.
-        // total_failed_items here counts items where the top-level processing failed.
+        // total_failed_items here counts items where the top-level download_item task failed.
     }
 
+    info!("Finished collection download for '{}'. Total items: {}, Failed items: {}",
+          collection_id, total_items, total_failed_items);
     // Send final completion status for this specific collection download
     let _ = progress_tx.send(DownloadProgress::CollectionCompleted(total_items, total_failed_items)).await;
 

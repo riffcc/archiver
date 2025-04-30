@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-// Removed unused chrono imports: DateTime, Utc
+use log::{debug, error, info, warn}; // Import log macros
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap; // For handling arbitrary metadata fields
@@ -115,10 +115,11 @@ pub async fn fetch_collection_items(
     rows: usize, // Number of results per page
     page: usize, // Page number (1-based)
 ) -> Result<(Vec<ArchiveDoc>, usize)> { // Return tuple: (docs, total_found)
+    info!("Fetching collection items for '{}', page {}, rows {}", collection_name, page, rows);
     let query = format!("collection:{}", collection_name);
     // let start = (page - 1) * rows; // API uses 0-based start index
 
-    let response = client
+    let request_builder = client
         .get(ADVANCED_SEARCH_URL)
         .query(&[
             ("q", query.as_str()),
@@ -127,40 +128,52 @@ pub async fn fetch_collection_items(
             ("rows", &rows.to_string()),
             ("page", &page.to_string()), // Note: API might use 'start' instead of 'page' depending on endpoint version/preference
             ("output", "json"),
-        ])
-        .send()
-        .await?;
+        ]);
+
+    debug!("Sending collection items request: {:?}", request_builder);
+    let response = request_builder.send().await.context("Failed to send collection items request")?;
 
     if !response.status().is_success() {
-        return Err(anyhow!(
-            "API request failed with status: {}",
-            response.status()
-        ));
+        let status = response.status();
+        let err_msg = format!("Collection items API request failed for '{}' with status: {}", collection_name, status);
+        error!("{}", err_msg);
+        return Err(anyhow!(err_msg));
     }
 
-    let search_result = response.json::<ArchiveSearchResponse>().await?;
+    let search_result = response
+        .json::<ArchiveSearchResponse>()
+        .await
+        .context(format!("Failed to parse JSON for collection items '{}'", collection_name))?;
 
-    Ok((search_result.response.docs, search_result.response.num_found)) // Return tuple
+    info!("Successfully fetched {} items (total found: {}) for collection '{}', page {}",
+          search_result.response.docs.len(), search_result.response.num_found, collection_name, page);
+    Ok((search_result.response.docs, search_result.response.num_found))
 }
 
 /// Fetches detailed metadata and file list for a given item identifier.
 pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<ItemDetails> {
+    info!("Fetching item details for identifier: {}", identifier);
     let url = format!("{}{}", METADATA_URL_BASE, identifier);
+    debug!("Requesting item details from URL: {}", url);
 
-    let response = client.get(&url).send().await?;
+    let response = client.get(&url).send().await.context(format!("Failed to send item details request for '{}'", identifier))?;
 
     if !response.status().is_success() {
-        return Err(anyhow!(
-            "Metadata API request failed for '{}' with status: {}",
+        let status = response.status();
+        // Log error but continue, as sometimes non-existent items return non-success but valid (empty) JSON
+        error!(
+            "Metadata API request for '{}' returned non-success status: {}",
             identifier,
-            response.status()
-        ));
+            status
+        );
+        // We might still be able to parse the body, so don't return Err just yet.
+        // The parsing step below will handle actual errors.
     }
 
     let raw_details = response
         .json::<ItemMetadataResponse>()
         .await
-        .context(format!("Failed to parse JSON for item '{}'", identifier))?;
+        .context(format!("Failed to parse JSON response for item details '{}'", identifier))?;
 
     // Helper function to extract the first string from a Value (string or array)
     let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
@@ -273,6 +286,7 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
         download_base_url,
     };
 
+    info!("Successfully processed item details for identifier: {}", identifier);
     Ok(details)
 }
 
@@ -282,6 +296,7 @@ pub async fn fetch_all_collection_identifiers(
     client: &Client,
     collection_name: &str,
 ) -> Result<Vec<String>> {
+    info!("Fetching all identifiers for collection: {}", collection_name);
     let mut all_identifiers = Vec::new();
     let mut current_page = 1;
     let mut total_found = 0;
@@ -300,12 +315,19 @@ pub async fn fetch_all_collection_identifiers(
             current_page, collection_name
         ))?;
 
+        debug!("Fetched page {} for collection '{}'. Found {} docs on page, total reported: {}",
+               current_page, collection_name, docs.len(), page_total_found);
+
         // Set total_found on the first successful page fetch
         if current_page == 1 {
             total_found = page_total_found;
+            info!("Total items reported for collection '{}': {}", collection_name, total_found);
         } else if total_found != page_total_found {
-            // Optional: Warn or error if total_found changes between pages?
-            // For now, we'll trust the first page's total.
+            warn!(
+                "Total items found changed between page 1 ({}) and page {} ({}) for collection '{}'. Using first page total.",
+                total_found, current_page, page_total_found, collection_name
+            );
+            // Continue using the total_found from the first page.
         }
 
         let num_docs_on_page = docs.len();
@@ -329,8 +351,10 @@ pub async fn fetch_all_collection_identifiers(
         // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
-    // Optional: Verify if fetched_count matches total_found?
-    // log::debug!("Fetched {} identifiers, expected {}", fetched_count, total_found);
+    info!("Finished fetching identifiers for collection '{}'. Found {} identifiers.", collection_name, fetched_count);
+    if total_found > 0 && fetched_count != total_found {
+        warn!("Fetched identifier count ({}) does not match reported total ({}) for collection '{}'.", fetched_count, total_found, collection_name);
+    }
 
     Ok(all_identifiers)
 }
