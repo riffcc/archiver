@@ -340,7 +340,17 @@ pub async fn fetch_all_collection_identifiers(
 mod tests {
     use super::*;
     use reqwest::Client;
+    use std::time::Duration; // Import Duration for timeouts
     use tokio;
+
+    // Helper function to create a client with timeouts for tests
+    fn test_client() -> Client {
+        Client::builder()
+            .timeout(Duration::from_secs(60)) // Use a longer timeout for tests (e.g., 60s)
+            .connect_timeout(Duration::from_secs(60))
+            .build()
+            .expect("Failed to build test client")
+    }
 
     // --- Integration Tests (require network access to archive.org) ---
 
@@ -349,7 +359,7 @@ mod tests {
     #[ignore] // Ignored by default, run with `cargo test -- --ignored`
     async fn test_fetch_collection_items_integration_success() {
         // Arrange
-        let client = Client::new();
+        let client = test_client(); // Use helper function
         let collection_name = "nasa"; // A known, large collection
         let rows = 5; // Fetch a small number of rows
         let page = 1;
@@ -380,7 +390,7 @@ mod tests {
     #[ignore] // Ignored by default, run with `cargo test -- --ignored`
     async fn test_fetch_collection_items_integration_not_found() {
         // Arrange
-        let client = Client::new();
+        let client = test_client(); // Use helper function
         // Use a collection name highly unlikely to exist
         let collection_name = "this_collection_should_really_not_exist_12345";
         let rows = 10;
@@ -423,7 +433,7 @@ mod tests {
     #[ignore]
     async fn test_fetch_item_details_integration_success() {
         // Arrange
-        let client = Client::new();
+        let client = test_client(); // Use helper function
         // Using the item provided by the user
         let identifier = "enrmp270_litmus_-_perception_of_light";
 
@@ -454,7 +464,7 @@ mod tests {
     #[ignore]
     async fn test_fetch_item_details_integration_not_found() {
         // Arrange
-        let client = Client::new();
+        let client = test_client(); // Use helper function
         let identifier = "this_item_definitely_does_not_exist_98765";
 
         // Act
@@ -477,7 +487,7 @@ mod tests {
     #[ignore]
     async fn test_fetch_collection_items_total_found_nasa() {
         // Arrange
-        let client = Client::new();
+        let client = test_client(); // Use helper function
         let collection_name = "nasa";
         let rows = 1; // Only need 1 row to get the total count
         let page = 1;
@@ -495,7 +505,7 @@ mod tests {
     #[ignore]
     async fn test_fetch_collection_items_total_found_nonexistent() {
         // Arrange
-        let client = Client::new();
+        let client = test_client(); // Use helper function
         let collection_name = "this_collection_definitely_does_not_exist_1234567890";
         let rows = 1;
         let page = 1;
