@@ -101,6 +101,9 @@ pub struct ItemDetails {
 }
 
 
+// --- Constants ---
+const ROWS_PER_PAGE: usize = 100; // Number of results to fetch per API call during pagination
+
 // --- API Fetch Functions ---
 
 /// Fetches item identifiers for a given collection name from Archive.org.
@@ -273,16 +276,63 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
     Ok(details)
 }
 
-/// Placeholder function to fetch ALL item identifiers for a collection.
-/// NOTE: A real implementation needs pagination logic.
+
+/// Fetches ALL item identifiers for a given collection using pagination.
 pub async fn fetch_all_collection_identifiers(
     client: &Client,
     collection_name: &str,
 ) -> Result<Vec<String>> {
-    // For now, just fetch the first page as a placeholder demonstration
-    let (docs, _total_found) = fetch_collection_items(client, collection_name, 100, 1).await?; // Destructure, ignore total for now
-    Ok(docs.into_iter().map(|doc| doc.identifier).collect())
-    // TODO: Implement proper pagination loop here based on 'numFound' and 'rows'/'start'
+    let mut all_identifiers = Vec::new();
+    let mut current_page = 1;
+    let mut total_found = 0;
+    let mut fetched_count = 0;
+
+    loop {
+        let (docs, page_total_found) = fetch_collection_items(
+            client,
+            collection_name,
+            ROWS_PER_PAGE,
+            current_page,
+        )
+        .await
+        .context(format!(
+            "Failed to fetch page {} for collection '{}'",
+            current_page, collection_name
+        ))?;
+
+        // Set total_found on the first successful page fetch
+        if current_page == 1 {
+            total_found = page_total_found;
+        } else if total_found != page_total_found {
+            // Optional: Warn or error if total_found changes between pages?
+            // For now, we'll trust the first page's total.
+        }
+
+        let num_docs_on_page = docs.len();
+        fetched_count += num_docs_on_page;
+
+        // Add identifiers from the current page
+        all_identifiers.extend(docs.into_iter().map(|doc| doc.identifier));
+
+        // Check termination conditions:
+        // 1. If total_found is 0, stop immediately.
+        // 2. If the number of docs received on this page is less than requested, it must be the last page.
+        // 3. If we have fetched at least as many items as the total reported, we are done.
+        if total_found == 0 || num_docs_on_page < ROWS_PER_PAGE || fetched_count >= total_found {
+            break;
+        }
+
+        // Prepare for the next page
+        current_page += 1;
+
+        // Optional: Add a small delay between requests to be polite to the API
+        // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // Optional: Verify if fetched_count matches total_found?
+    // log::debug!("Fetched {} identifiers, expected {}", fetched_count, total_found);
+
+    Ok(all_identifiers)
 }
 
 
