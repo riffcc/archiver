@@ -331,7 +331,9 @@ async fn main() -> Result<()> {
 // --- Download Helper Functions ---
 
 // Removed redundant imports: use std::path::Path; and use tokio::fs::{self, File};
-// The necessary items (std::path::Path, tokio::fs) are already imported at the top or used via module path.
+// The necessary items (std::path::Path, tokio::fs::File) are imported at the top.
+// We still need `tokio::fs` itself for functions like `metadata` and `create_dir_all`.
+use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use futures_util::StreamExt;
 
