@@ -1,5 +1,4 @@
 use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
-use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
 use crate::settings::Settings;
 use ratatui::widgets::ListState;
 use reqwest::Client;

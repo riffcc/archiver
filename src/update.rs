@@ -1,5 +1,5 @@
 use crate::app::{ActivePane, App, AppState, DownloadAction, UpdateAction};
-use crate::settings;
+// Removed unused settings import
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 

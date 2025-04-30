@@ -82,7 +82,7 @@ fn render_collection_list_pane(app: &mut App, frame: &mut Frame, area: Rect) {
         .title("Collections ('a': Add, Del: Remove, Enter: Load, Tab: Switch)")
         .border_style(border_style);
 
-    let inner_area = list_block.inner(area); // Get area inside borders
+    let _inner_area = list_block.inner(area); // Prefix with underscore
 
     if app.settings.favorite_collections.is_empty() {
         let empty_msg = Paragraph::new("No collections saved.\nPress 'a' to add one.")
@@ -138,7 +138,7 @@ fn render_item_list_pane(app: &mut App, frame: &mut Frame, area: Rect) {
         .title(list_title)
         .border_style(border_style);
 
-    let inner_area = list_block.inner(area); // Get area inside borders
+    let _inner_area = list_block.inner(area); // Prefix with underscore
 
     if app.is_loading {
         let loading_paragraph = Paragraph::new("Loading items...")
@@ -329,7 +329,8 @@ fn render_file_list_pane(app: &mut App, frame: &mut Frame, area: Rect) {
             let empty_msg = Paragraph::new("No files found for this item.")
                 .style(Style::default().fg(Color::DarkGray))
                 .alignment(Alignment::Center);
-            frame.render_widget(empty_msg, inner_area);
+            // Render inside the block's inner area
+            frame.render_widget(empty_msg, block.inner(area));
             return;
         }
 
@@ -380,7 +381,7 @@ fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {
 
 /// Renders a centered input box overlay for editing a setting.
 fn render_editing_setting_input(app: &mut App, frame: &mut Frame) {
-    let area = centered_rect(60, 3, frame.size()); // Adjust size as needed
+    let area = centered_rect(60, 3, frame.area()); // Use frame.area()
 
     let input_prompt = "Edit Value: ";
     let input_text = format!("{}{}", input_prompt, app.editing_setting_input);
@@ -405,7 +406,7 @@ fn render_editing_setting_input(app: &mut App, frame: &mut Frame) {
 
 /// Renders a centered input box overlay for adding a new collection.
 fn render_add_collection_input(app: &mut App, frame: &mut Frame) {
-    let area = centered_rect(60, 3, frame.size()); // Adjust size as needed
+    let area = centered_rect(60, 3, frame.area()); // Use frame.area()
 
     let input_prompt = "Collection ID: ";
     let input_text = format!("{}{}", input_prompt, app.add_collection_input);
@@ -430,7 +431,7 @@ fn render_add_collection_input(app: &mut App, frame: &mut Frame) {
 
 /// Renders a centered input box overlay for asking the download directory.
 fn render_ask_download_dir_input(app: &mut App, frame: &mut Frame) {
-    let area = centered_rect(80, 3, frame.size()); // Adjust size as needed
+    let area = centered_rect(80, 3, frame.area()); // Use frame.area()
 
     let input_prompt = "Download Path: ";
     // Reuse editing_setting_input for this temporary input
