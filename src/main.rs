@@ -336,7 +336,8 @@ async fn main() -> Result<()> {
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use futures_util::StreamExt;
-use log::{debug, error, info, warn}; // Import log macros here too
+// Removed redundant log macro import: use log::{debug, error, info, warn};
+// Macros are already imported at the top of the file.
 
 
 /// Downloads a single file.
