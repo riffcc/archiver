@@ -223,7 +223,7 @@ fn render_item_view(app: &mut App, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    if let Some(details) = &app.current_item_details {
+    if let Some(_details) = &app.current_item_details { // Prefix with underscore
         // Split the inner area for metadata and file list
         let view_layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -253,7 +253,7 @@ fn render_metadata_pane(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(block, area);
 
     // Use the details if available
-    if let Some(details) = &app.current_item_details { // Removed underscore from pattern
+    if let Some(_details) = &app.current_item_details { // Prefix with underscore
         let mut lines = Vec::new(); // Changed to Vec<Line>
 
         // Use app.current_item_details directly below where needed

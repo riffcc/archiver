@@ -2,7 +2,7 @@ use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
 use crate::settings::Settings;
 use ratatui::widgets::ListState;
 use reqwest::Client;
-use std::{path::PathBuf, time::Instant};
+use std::{path::PathBuf, time::{Instant, Duration}}; // Add Duration
 
 /// Represents the different states or modes the application can be in.
 #[derive(Clone, Debug, PartialEq, Eq)]
