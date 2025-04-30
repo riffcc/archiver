@@ -368,8 +368,7 @@ fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_stateful_widget(list, inner_area, &mut app.settings_list_state);
 }
 
-
-fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
+/// Formats a download speed in bytes per second into a human-readable string (KB/s, MB/s, etc.).
 fn format_speed(bytes_per_sec: f64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
@@ -383,9 +382,9 @@ fn format_speed(bytes_per_sec: f64) -> String {
         format!("{:.1} KB/s", bytes_per_sec / KB)
     } else {
         format!("{:.0} B/s", bytes_per_sec)
-    }
 }
 
+/// Renders the status bar at the bottom of the screen.
 fn render_status_bar(app: &mut App, frame: &mut Frame, area: Rect) {
     let status_text = if app.is_downloading {
         // Calculate speed if start time is available
