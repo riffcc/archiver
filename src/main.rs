@@ -116,15 +116,15 @@ async fn main() -> Result<()> {
                                         tokio::spawn(async move {
                                             let result = match download_action {
                                                 DownloadAction::ItemAllFiles(item_id) => {
-                                                    // Pass semaphore down
-                                                    download_item(&client_clone, &base_dir_clone, &item_id, progress_tx_clone.clone(), semaphore_clone).await
+                                                    // Pass semaphore down, no collection context for single item download
+                                                    download_item(&client_clone, &base_dir_clone, None, &item_id, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::File(item_id, file) => {
-                                                    // Pass semaphore down
-                                                    download_single_file(&client_clone, &base_dir_clone, &item_id, &file, progress_tx_clone.clone(), semaphore_clone).await
+                                                    // Pass semaphore down, no collection context for single file download
+                                                    download_single_file(&client_clone, &base_dir_clone, None, &item_id, &file, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::Collection(collection_id) => {
-                                                     // Pass semaphore down
+                                                     // Pass semaphore down, collection context is provided by download_collection itself
                                                      download_collection(&client_clone, &base_dir_clone, &collection_id, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                             };
@@ -269,18 +269,22 @@ use futures_util::StreamExt;
 
 
 /// Downloads a single file.
-/// Path: base_dir / item_id / filename
+/// Path: base_dir / [collection_id] / item_id / filename
 async fn download_single_file(
     client: &Client,
     base_dir: &str,
-    // collection: &str, // Removed
+    collection_id: Option<&str>, // Added: Optional collection context
     item_id: &str,
     file_details: &archive_api::FileDetails,
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>,
 ) -> Result<()> {
     // --- Idempotency Check ---
-    let file_path = Path::new(base_dir).join(item_id).join(&file_details.name); // Updated path
+    // Construct path based on whether collection_id is present
+    let file_path = match collection_id {
+        Some(c) => Path::new(base_dir).join(c).join(item_id).join(&file_details.name),
+        None => Path::new(base_dir).join(item_id).join(&file_details.name),
+    };
     let expected_size_str = file_details.size.as_deref();
     let expected_size: Option<u64> = expected_size_str.and_then(|s| s.parse().ok());
 
@@ -363,11 +367,11 @@ async fn download_single_file(
 }
 
 /// Downloads all files for a given item.
-/// Path: base_dir / item_id / ...
+/// Path: base_dir / [collection_id] / item_id / ...
 async fn download_item(
     client: &Client,
     base_dir: &str,
-    // collection: &str, // Removed
+    collection_id: Option<&str>, // Added: Optional collection context
     item_id: &str,
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>,
@@ -388,8 +392,11 @@ async fn download_item(
 
      let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} files for item: {}", total_files, item_id))).await;
 
-     // Create directory: base_dir / item_id
-     let item_dir = Path::new(base_dir).join(item_id); // Updated path
+     // Create directory: base_dir / [collection_id] / item_id
+     let item_dir = match collection_id {
+        Some(c) => Path::new(base_dir).join(c).join(item_id),
+        None => Path::new(base_dir).join(item_id),
+     };
      fs::create_dir_all(&item_dir).await.context("Failed to create item directory")?;
 
      let mut file_join_handles = vec![];
