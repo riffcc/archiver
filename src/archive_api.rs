@@ -410,7 +410,7 @@ mod tests {
     #[ignore] // Ignored by default, run with `cargo test -- --ignored`
     async fn test_fetch_collection_items_integration_invalid_chars() {
         // Arrange
-        let client = Client::new();
+        let client = test_client(); // Use helper function
         // Archive.org might handle this gracefully, but good to test
         let collection_name = "invalid collection name with spaces";
         let rows = 10;
