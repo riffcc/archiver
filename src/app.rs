@@ -155,12 +155,6 @@ pub enum DownloadProgress {
 
 impl App {
     /// Constructs a new instance of [`App`].
-use std::time::Duration; // Add Duration
-
-// ... other imports
-
-impl App {
-    /// Constructs a new instance of [`App`].
     pub fn new() -> Self {
         // Configure Reqwest client with timeouts
         let client = Client::builder()
