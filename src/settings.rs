@@ -127,22 +127,29 @@ mod tests {
      #[test]
      fn test_save_settings_creates_directory() {
          let temp_dir = tempdir().unwrap();
-         let config_dir_base = temp_dir.path().join(".config"); // Don't create APPLICATION subdir yet
-
-         // Mock HOME to point to temp_dir
          let mock_home = temp_dir.path().to_path_buf();
          env::set_var("HOME", mock_home.to_str().unwrap());
+
+         // Use ProjectDirs to find the expected path, consistent with how save_settings works
+         let proj_dirs = ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
+             .expect("Could not find project directories in test");
+         let expected_config_dir = proj_dirs.config_dir();
+         let expected_config_path = expected_config_dir.join("settings.toml");
+
+         // Ensure the directory does NOT exist initially to confirm save_settings creates it
+         assert!(!expected_config_dir.exists(), "Config directory should not exist initially at {:?}", expected_config_dir);
 
          let settings_to_save = Settings {
              download_directory: Some("test_dir".to_string()),
              max_concurrent_downloads: Some(5),
-             favorite_collections: vec!["coll1".to_string(), "coll2".to_string()], // Add test data
-             max_concurrent_collections: Some(2), // Add test data
+             favorite_collections: vec!["coll1".to_string(), "coll2".to_string()],
+             max_concurrent_collections: Some(2),
          };
+         // This call should create the directory via get_config_path() and write the file
          save_settings(&settings_to_save).unwrap();
 
-         let expected_config_path = config_dir_base.join(APPLICATION).join("settings.toml");
-         assert!(expected_config_path.exists(), "Config file should be created");
-         assert!(expected_config_path.parent().unwrap().exists(), "Config directory should be created");
+         // Assert that save_settings created the file and its parent directory
+         assert!(expected_config_path.exists(), "Config file should be created at {:?}", expected_config_path);
+         assert!(expected_config_path.parent().unwrap().exists(), "Config directory should be created at {:?}", expected_config_dir);
      }
 }
