@@ -407,18 +407,20 @@ async fn download_item(
          // Clone necessary data for the file download task
          let client_clone = client.clone();
          let base_dir_clone = base_dir.to_string();
-         // let collection_clone = collection.to_string(); // Removed
          let item_id_clone = item_id.to_string();
          let progress_tx_clone = progress_tx.clone();
          let semaphore_clone = Arc::clone(&semaphore);
          let file_clone = file.clone();
+         // Clone collection_id for the task (as Option<String>)
+         let collection_id_task_clone = collection_id.map(|s| s.to_string());
+
 
          let handle = tokio::spawn(async move {
-             // Call download_single_file (which no longer needs collection name)
+             // Call download_single_file, passing the optional collection ID
              download_single_file(
                  &client_clone,
                  &base_dir_clone,
-                 // &collection_clone, // Removed
+                 collection_id_task_clone.as_deref(), // Pass optional collection ID as &str
                  &item_id_clone,
                  &file_clone,
                  progress_tx_clone,
@@ -495,7 +497,7 @@ async fn download_collection(
             let item_result = download_item(
                 &client_clone,
                 &base_dir_clone,
-                // No collection name needed here anymore
+                Some(&collection_id_clone), // Pass collection ID context
                 &item_id_clone,
                 progress_tx_clone.clone(),
                 semaphore_clone, // Pass file semaphore
