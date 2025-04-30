@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use rust_tui_app::{
-    app::{App, DownloadAction, DownloadProgress, UpdateAction}, // Add DownloadProgress
-    archive_api::{self, ArchiveDoc, ItemDetails},
+    app::{App, AppState, DownloadAction, DownloadProgress, UpdateAction}, // Add AppState
+    archive_api::{self, ArchiveDoc, FileDetails, ItemDetails}, // Add FileDetails
     event::{Event, EventHandler},
-    settings,
+    settings::{self, Settings}, // Import Settings struct
     tui::Tui,
     update::update,
 };
@@ -52,121 +52,130 @@ async fn main() -> Result<()> {
                     Event::Tick => app.tick(),
                     Event::Key(key_event) => {
                         // Handle input and check if an action is requested
-                        if let Some(action) = update(&mut app, key_event) {
+                        if let Some(action) = update(&mut app, key_event) { // update now returns Option<UpdateAction>
                             match action {
-                                UpdateAction::FetchCollection => { // Use direct name
-                                    app.is_loading = true; // Set loading state for collection search
+                                UpdateAction::FetchCollectionItems(collection_name) => {
+                                    // This action is now triggered when selecting a collection
+                                    app.is_loading = true; // Set loading state for item list
                                     app.items.clear(); // Clear previous items
-                                    app.error_message = None; // Clear previous error
-                                    app.download_status = None; // Clear download status
+                                    app.error_message = None;
+                                    app.download_status = None;
+                                    // current_collection_name should already be set by update()
+                                    // assert_eq!(app.current_collection_name.as_ref(), Some(&collection_name));
 
                                     let client = app.client.clone();
-                                    // Use current_collection_name if set, otherwise input
-                                    let collection_name = app.current_collection_name.clone().unwrap_or_else(|| app.collection_input.clone());
                                     let tx = collection_api_tx.clone();
-
+                                    // Spawn task to fetch items for the specific collection
                                     tokio::spawn(async move {
+                                        // TODO: Add pagination support later (rows=50, page=1 for now)
                                         let result = archive_api::fetch_collection_items(&client, &collection_name, 50, 1).await;
                                         let _ = tx.send(result).await;
                                     });
                                 }
-                                UpdateAction::FetchItemDetails => { // Use direct name
+                                UpdateAction::FetchItemDetails => {
+                                    // Triggered when selecting an item in the item list
                                     // is_loading_details should already be true from update()
                                     if let Some(identifier) = app.viewing_item_id.clone() {
                                         let client = app.client.clone();
                                         let tx = item_details_tx.clone();
-                                        app.error_message = None; // Clear previous error
-                                        app.download_status = None; // Clear download status
+                                        app.error_message = None;
+                                        app.download_status = None;
                                         tokio::spawn(async move {
                                             let result = archive_api::fetch_item_details(&client, &identifier).await;
                                             let _ = tx.send(result).await;
                                         });
                                     } else {
+                                        // Should not happen if triggered correctly from update()
                                         app.is_loading_details = false;
-                                        app.error_message = Some("Error: Tried to load details without an item ID.".to_string());
+                                        app.error_message = Some("Error: No item ID available for details fetch.".to_string());
                                     }
                                 }
-                                UpdateAction::StartDownload(download_action) => { // Use direct name
+                                UpdateAction::StartDownload(download_action) => {
+                                    // Triggered by 'd' or 'b' in various contexts
                                     if app.is_downloading {
                                         app.download_status = Some("Another download is already in progress.".to_string());
                                     } else if let Some(base_dir) = app.settings.download_directory.clone() {
-                                        app.is_downloading = true; // Set downloading flag
-                                        app.error_message = None; // Clear previous error
-                                        // Reset progress counters for new download operation
-                                        // total_items_to_download is set in update() for bulk downloads
-                                        // app.total_items_to_download = None;
+                                        // Set downloading flag and reset progress
+                                        app.is_downloading = true;
+                                        app.error_message = None;
                                         app.items_downloaded_count = 0;
-                                        app.total_files_to_download = None;
+                                        app.total_files_to_download = None; // Reset, will be updated by tasks
                                         app.files_downloaded_count = 0;
-                                        app.total_bytes_downloaded = 0; // Reset bytes
-                                        app.download_start_time = Some(Instant::now()); // Record start time
+                                        app.total_bytes_downloaded = 0;
+                                        app.download_start_time = Some(Instant::now());
+                                        app.total_items_to_download = None; // Reset, set by Collection task if needed
 
-                                        // Clone necessary data for the task
-                                        let client = app.client.clone();
-                                        // Clone data needed *before* the permit acquisition task
-                                        let client_clone = client.clone();
+                                        // Clone data needed for the download task
+                                        let client_clone = app.client.clone();
                                         let base_dir_clone = base_dir.clone();
-                                        let collection_clone = app.current_collection_name.clone().unwrap_or_default();
-                                        let progress_tx_clone = download_progress_tx.clone(); // Use progress channel
-                                        let semaphore_clone = Arc::clone(&semaphore); // Clone Arc pointer
+                                        let progress_tx_clone = download_progress_tx.clone();
+                                        let semaphore_clone = Arc::clone(&semaphore); // File download semaphore
 
+                                        // Spawn the download task
                                         tokio::spawn(async move {
-                                            // REMOVED: Permit acquisition moved into download helpers / sub-tasks
-
-                                            // Proceed with the download action directly
                                             let result = match download_action {
-                                                DownloadAction::ItemAllFiles(id) => {
+                                                DownloadAction::ItemAllFiles(item_id) => {
                                                     // Pass semaphore down
-                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, progress_tx_clone.clone(), semaphore_clone).await
+                                                    download_item(&client_clone, &base_dir_clone, &item_id, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
-                                                DownloadAction::File(id, file) => {
+                                                DownloadAction::File(item_id, file) => {
                                                     // Pass semaphore down
-                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, progress_tx_clone.clone(), semaphore_clone).await
+                                                    download_single_file(&client_clone, &base_dir_clone, &item_id, &file, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
-                                                DownloadAction::Collection => {
-                                                     // Pass semaphore down (already correct)
-                                                     download_collection(&client_clone, &base_dir_clone, &collection_clone, progress_tx_clone.clone(), semaphore_clone).await
+                                                DownloadAction::Collection(collection_id) => {
+                                                     // Pass semaphore down
+                                                     download_collection(&client_clone, &base_dir_clone, &collection_id, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                             };
 
-                                            // Send error if the top-level task function itself failed (e.g., fetching identifiers)
+                                            // Report top-level task errors (e.g., failed to get identifiers)
                                             if let Err(e) = result {
-                                                 let _ = progress_tx_clone.send(DownloadProgress::Error(format!("Download Task Error: {}", e))).await;
+                                                let _ = progress_tx_clone.send(DownloadProgress::Error(format!("Download Task Error: {}", e))).await;
                                             }
-
-                                            // REMOVED: Permit drop logic moved into download helpers / sub-tasks
+                                            // Note: is_downloading flag is reset when CollectionCompleted or Error is received
                                         });
                                     } else {
-                                         // Should be caught by update, but handle defensively
-                                         app.error_message = Some("Error: Download directory not set.".to_string());
+                                        // This case should be handled by update() sending to AskingDownloadDir state
+                                        app.error_message = Some("Error: Download directory not set.".to_string());
                                     }
+                                }
+                                UpdateAction::SaveSettings => {
+                                     // Triggered after adding/removing collection or exiting settings
+                                     if let Err(e) = settings::save_settings(&app.settings) {
+                                         app.error_message = Some(format!("Failed to save settings: {}", e));
+                                     } else {
+                                         // Optional: Show confirmation? Status bar might be enough.
+                                         // app.download_status = Some("Settings saved.".to_string());
+                                     }
                                 }
                             }
                         }
                     },
-                    Event::Mouse(_) => {}
-                    Event::Resize(_, _) => {}
+                    Event::Mouse(_) => {} // Ignore mouse events
+                    Event::Resize(_, _) => {} // Terminal handles resize redraw automatically
                 }
             }
             // Handle collection search API results
             Some(result) = collection_api_rx.recv() => {
                 app.is_loading = false; // Reset collection loading state
                 match result {
-                    Ok((items, total_found)) => { // Destructure the tuple
+                    Ok((items, total_found)) => {
                         app.items = items;
-                        app.total_items_found = Some(total_found); // Store total found
+                        app.total_items_found = Some(total_found);
                         if !app.items.is_empty() {
-                             app.list_state.select(Some(0)); // Select first item if list is not empty
+                            app.item_list_state.select(Some(0)); // Select first item in item list
                         } else {
-                             app.list_state.select(None); // Deselect if list is empty
+                            app.item_list_state.select(None); // Deselect if list is empty
                         }
-                        app.error_message = None; // Clear error on success
+                        // Don't clear error message here, might be unrelated save error etc.
+                        // update() clears errors at the start of handling event.
                     }
                     Err(e) => {
-                        app.items.clear(); // Clear items on error
-                        app.total_items_found = None; // Clear total found on error
-                        app.list_state.select(None); // Deselect on error
-                        app.error_message = Some(format!("Error fetching data: {}", e));
+                        // Error fetching items for the selected collection
+                        app.items.clear();
+                        app.total_items_found = None;
+                        app.item_list_state.select(None);
+                        app.error_message = Some(format!("Error fetching items: {}", e));
                     }
                 }
             }
@@ -259,17 +268,18 @@ use futures_util::StreamExt;
 
 
 /// Downloads a single file.
+/// Path: base_dir / item_id / filename
 async fn download_single_file(
     client: &Client,
     base_dir: &str,
-    collection: &str,
+    // collection: &str, // Removed
     item_id: &str,
     file_details: &archive_api::FileDetails,
     progress_tx: mpsc::Sender<DownloadProgress>,
-    semaphore: Arc<Semaphore>, // Add semaphore parameter back
+    semaphore: Arc<Semaphore>,
 ) -> Result<()> {
     // --- Idempotency Check ---
-    let file_path = Path::new(base_dir).join(collection).join(item_id).join(&file_details.name);
+    let file_path = Path::new(base_dir).join(item_id).join(&file_details.name); // Updated path
     let expected_size_str = file_details.size.as_deref();
     let expected_size: Option<u64> = expected_size_str.and_then(|s| s.parse().ok());
 
@@ -352,16 +362,17 @@ async fn download_single_file(
 }
 
 /// Downloads all files for a given item.
+/// Path: base_dir / item_id / ...
 async fn download_item(
     client: &Client,
     base_dir: &str,
-    collection: &str,
+    // collection: &str, // Removed
     item_id: &str,
     progress_tx: mpsc::Sender<DownloadProgress>,
-    semaphore: Arc<Semaphore>, // Add semaphore parameter back
+    semaphore: Arc<Semaphore>,
 ) -> Result<()> {
-     let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
-     // Fetch item details first to get the file list
+    let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
+    // Fetch item details first to get the file list
      let details = archive_api::fetch_item_details(client, item_id).await?;
 
      let total_files = details.files.len();
@@ -371,12 +382,13 @@ async fn download_item(
      if details.files.is_empty() {
          let _ = progress_tx.send(DownloadProgress::Status(format!("No files found for item: {}", item_id))).await;
          let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), true)).await; // Mark as completed (successfully, with 0 files)
-         return Ok(()); // Not an error, just nothing to do
+         return Ok(());
      }
 
-     let _ = progress_tx.send(DownloadProgress::Status(format!("Starting download for {} files in item: {}", total_files, item_id))).await;
+     let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} files for item: {}", total_files, item_id))).await;
 
-     let item_dir = Path::new(base_dir).join(collection).join(item_id);
+     // Create directory: base_dir / item_id
+     let item_dir = Path::new(base_dir).join(item_id); // Updated path
      fs::create_dir_all(&item_dir).await.context("Failed to create item directory")?;
 
      let mut file_join_handles = vec![];
@@ -387,22 +399,22 @@ async fn download_item(
          // Clone necessary data for the file download task
          let client_clone = client.clone();
          let base_dir_clone = base_dir.to_string();
-         let collection_clone = collection.to_string();
+         // let collection_clone = collection.to_string(); // Removed
          let item_id_clone = item_id.to_string();
          let progress_tx_clone = progress_tx.clone();
-         let semaphore_clone = Arc::clone(&semaphore); // Clone Arc for the task
-         let file_clone = file.clone(); // Clone file details
+         let semaphore_clone = Arc::clone(&semaphore);
+         let file_clone = file.clone();
 
          let handle = tokio::spawn(async move {
-             // Call download_single_file, which now acquires the semaphore permit
+             // Call download_single_file (which no longer needs collection name)
              download_single_file(
                  &client_clone,
                  &base_dir_clone,
-                 &collection_clone,
+                 // &collection_clone, // Removed
                  &item_id_clone,
-                 &file_clone, // Pass cloned file details
+                 &file_clone,
                  progress_tx_clone,
-                 semaphore_clone, // Pass semaphore for acquisition
+                 semaphore_clone,
              )
              .await
          });
@@ -431,78 +443,78 @@ async fn download_item(
      Ok(()) // Return Ok even if some files failed, ItemCompleted indicates success/failure
 }
 
-/// Downloads all items listed for the current collection.
+/// Downloads all items for a specific collection identifier.
 async fn download_collection(
     client: &Client,
     base_dir: &str,
-    collection: &str,
-    progress_tx: mpsc::Sender<DownloadProgress>, // Changed type
-    semaphore: Arc<Semaphore>, // Pass semaphore for sub-tasks
+    collection_id: &str, // Now takes specific collection ID
+    progress_tx: mpsc::Sender<DownloadProgress>,
+    semaphore: Arc<Semaphore>, // File download semaphore
 ) -> Result<()> {
-    let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers for: {}", collection))).await;
+    let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers for: {}", collection_id))).await;
 
-    // --- Fetch ALL identifiers ---
-    // This requires a modified fetch function or pagination loop.
-    // Placeholder: Assume we have a function that returns Vec<String>
-    let all_identifiers = archive_api::fetch_all_collection_identifiers(client, collection).await
-        .context("Failed to fetch collection identifiers")?;
-    // --- End Placeholder ---
+    // --- Fetch ALL identifiers for the specified collection ---
+    let all_identifiers = archive_api::fetch_all_collection_identifiers(client, collection_id).await
+        .context(format!("Failed to fetch identifiers for collection '{}'", collection_id))?;
+    // ---
 
     if all_identifiers.is_empty() {
-        let _ = progress_tx.send(DownloadProgress::Status(format!("No items found for: {}", collection))).await;
-        let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await; // Send completion for 0 items
+        let _ = progress_tx.send(DownloadProgress::Status(format!("No items found in collection: {}", collection_id))).await;
+        let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
         return Ok(());
     }
 
     let total_items = all_identifiers.len();
-    // Remove sending CollectionInfo - total is set in app state by update()
-    // let _ = progress_tx.send(DownloadProgress::CollectionInfo(total_items)).await;
-    let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} items for: {}", total_items, collection))).await;
+    // Send total item count for this collection download
+    let _ = progress_tx.send(DownloadProgress::CollectionInfo(total_items)).await;
+    let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} items for collection: {}", total_items, collection_id))).await;
 
     let mut join_handles = vec![];
     let mut total_failed_items = 0;
 
+    // Iterate through identifiers and spawn item download tasks
     for item_id in all_identifiers.into_iter() {
-        // Clone necessary data *before* the async block for the permit
+        // Clone data needed for the item download task
         let client_clone = client.clone();
         let base_dir_clone = base_dir.to_string();
-        let collection_clone = collection.to_string();
         let progress_tx_clone = progress_tx.clone();
-        let semaphore_clone = Arc::clone(&semaphore); // Clone Arc for the task
-        let item_id_clone = item_id.clone(); // Keep this clone
+        let semaphore_clone = Arc::clone(&semaphore); // Pass file semaphore down
+        let item_id_clone = item_id.clone(); // Keep clone for task
 
         let handle = tokio::spawn(async move {
-            // REMOVED: Semaphore acquisition at item level.
-
-            // Process the item: fetch details, spawn file download tasks.
-            // Pass the semaphore down for file tasks to acquire permits individually.
+            // download_item handles fetching details and spawning file downloads
+            // It uses the semaphore passed down for individual file permits
             let item_result = download_item(
                 &client_clone,
                 &base_dir_clone,
-                &collection_clone,
+                // No collection name needed here anymore
                 &item_id_clone,
                 progress_tx_clone.clone(),
-                semaphore_clone, // Pass semaphore down
+                semaphore_clone, // Pass file semaphore
             )
             .await;
-
-            // REMOVED: Permit drop logic.
-            item_result // Return the result of the item download processing (spawning files)
+            item_result // Return result (Ok or Err)
         });
-        join_handles.push(handle); // Keep collecting handles
+        join_handles.push(handle);
     }
 
-    // Wait for all spawned item processing tasks to complete and count failures
+    // Wait for all item download tasks for this collection to complete
     for handle in join_handles {
         match handle.await {
-            Ok(Ok(_)) => { /* Item download task succeeded */ }
-            Ok(Err(_)) => { total_failed_items += 1; } // Item download function returned error
-            Err(_) => { total_failed_items += 1; } // Task itself panicked or was cancelled
+            Ok(Ok(_)) => { /* Item processing (spawning files) succeeded */ }
+            Ok(Err(_)) => { total_failed_items += 1; } // download_item returned an error (e.g., failed to fetch details)
+            Err(_) => { total_failed_items += 1; } // Task panicked
         }
+        // Note: Individual file errors within an item are handled by download_item
+        // and reflected in the ItemCompleted message's success flag.
+        // total_failed_items here counts items where the top-level processing failed.
     }
 
-    // Send final collection completion status
+    // Send final completion status for this specific collection download
     let _ = progress_tx.send(DownloadProgress::CollectionCompleted(total_items, total_failed_items)).await;
 
     Ok(())
 }
+
+// TODO: Implement multi-collection download logic using max_concurrent_collections semaphore.
+// This would likely involve another layer of task spawning in main.rs or a dedicated function.

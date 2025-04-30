@@ -7,18 +7,26 @@ const QUALIFIER: &str = "com";
 const ORGANIZATION: &str = "riffcc"; // Updated organization
 pub const APPLICATION: &str = "archiver"; // Updated application name
 
-#[derive(Serialize, Deserialize, Debug, Clone)] // Removed Default here
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Settings {
     pub download_directory: Option<String>,
-    pub max_concurrent_downloads: Option<usize>, // Add concurrency limit
+    /// Max concurrent file downloads *within* a single item/collection download task.
+    pub max_concurrent_downloads: Option<usize>,
+    /// List of saved collection identifiers.
+    #[serde(default = "Vec::new")] // Ensure field exists even if missing in old config
+    pub favorite_collections: Vec<String>,
+    /// Max concurrent collection downloads (when downloading multiple collections).
+    pub max_concurrent_collections: Option<usize>,
 }
 
-// Implement Default manually to set a default concurrency
+// Implement Default manually to set defaults
 impl Default for Settings {
     fn default() -> Self {
         Self {
             download_directory: None,
-            max_concurrent_downloads: Some(4), // Default to 4 concurrent downloads
+            max_concurrent_downloads: Some(4), // Default to 4 concurrent file downloads
+            favorite_collections: Vec::new(),  // Default to empty list
+            max_concurrent_collections: Some(1), // Default to downloading 1 collection at a time
         }
     }
 }
@@ -124,7 +132,9 @@ mod tests {
 
          let settings_to_save = Settings {
              download_directory: Some("test_dir".to_string()),
-             max_concurrent_downloads: Some(5), // Initialize the new field
+             max_concurrent_downloads: Some(5),
+             favorite_collections: vec!["coll1".to_string(), "coll2".to_string()], // Add test data
+             max_concurrent_collections: Some(2), // Add test data
          };
          save_settings(&settings_to_save).unwrap();
 
