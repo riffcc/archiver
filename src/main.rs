@@ -111,26 +111,21 @@ async fn main() -> Result<()> {
                                         let semaphore_clone = Arc::clone(&semaphore); // Clone Arc pointer
 
                                         tokio::spawn(async move {
-                                            // Acquire semaphore permit before starting download logic
-                                            let permit = match semaphore_clone.acquire().await {
-                                                 Ok(p) => p,
-                                                 Err(_) => {
-                                                     // Semaphore closed, unlikely but handle
-                                                     let _ = progress_tx_clone.send(DownloadProgress::Error("Download semaphore closed.".to_string())).await;
-                                                     return;
-                                                 }
-                                            };
+                                            // REMOVED: Permit acquisition moved into download helpers / sub-tasks
 
-                                            // Now we have a permit, proceed with the download
+                                            // Proceed with the download action directly
                                             let result = match download_action {
                                                 DownloadAction::ItemAllFiles(id) => {
-                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, progress_tx_clone.clone()).await
+                                                    // Pass semaphore down
+                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::File(id, file) => {
-                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, progress_tx_clone.clone()).await
+                                                    // Pass semaphore down
+                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::Collection => {
-                                                     download_collection(&client_clone, &base_dir_clone, &collection_clone, progress_tx_clone.clone(), Arc::clone(&semaphore_clone)).await
+                                                     // Pass semaphore down (already done)
+                                                     download_collection(&client_clone, &base_dir_clone, &collection_clone, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                             };
 
@@ -139,8 +134,7 @@ async fn main() -> Result<()> {
                                                  let _ = progress_tx_clone.send(DownloadProgress::Error(format!("Download Task Error: {}", e))).await;
                                             }
 
-                                            // Permit is automatically dropped here when the task finishes, releasing the semaphore slot
-                                            drop(permit);
+                                            // REMOVED: Permit drop logic moved into download helpers / sub-tasks
                                         });
                                     } else {
                                          // Should be caught by update, but handle defensively
@@ -271,8 +265,12 @@ async fn download_single_file(
     collection: &str,
     item_id: &str,
     file_details: &archive_api::FileDetails,
-    progress_tx: mpsc::Sender<DownloadProgress>, // Changed type
+    progress_tx: mpsc::Sender<DownloadProgress>,
+    semaphore: Arc<Semaphore>, // Add semaphore
 ) -> Result<()> {
+    // Acquire permit for this single file download
+    let permit = semaphore.acquire().await.context("Failed to acquire download permit")?;
+
     let file_path = Path::new(base_dir).join(collection).join(item_id).join(&file_details.name);
     let download_url = format!(
         "https://archive.org/download/{}/{}",
@@ -335,6 +333,8 @@ async fn download_single_file(
 
     // Send completion via progress channel
     let _ = progress_tx.send(DownloadProgress::FileCompleted(file_details.name.clone())).await;
+
+    drop(permit); // Explicitly drop permit after completion/error handling
     Ok(())
 }
 
@@ -344,7 +344,8 @@ async fn download_item(
     base_dir: &str,
     collection: &str,
     item_id: &str,
-    progress_tx: mpsc::Sender<DownloadProgress>, // Changed type
+    progress_tx: mpsc::Sender<DownloadProgress>,
+    semaphore: Arc<Semaphore>, // Add semaphore
 ) -> Result<()> {
      let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
      // Fetch item details first to get the file list
@@ -367,13 +368,39 @@ async fn download_item(
 
      // Removed unused success_count
      let mut item_failed = false;
+     let mut file_join_handles = vec![];
 
      for file in details.files.iter() {
-         // download_single_file now sends FileCompleted or Error messages
-         if let Err(e) = download_single_file(client, base_dir, collection, item_id, file, progress_tx.clone()).await {
-              item_failed = true;
-              // Error message already sent by download_single_file
-              let _ = progress_tx.send(DownloadProgress::Status(format!("Continuing item {} after error on file {}: {}", item_id, file.name, e))).await;
+         // Clone necessary data for the file download task
+         let client_clone = client.clone();
+         let base_dir_clone = base_dir.to_string();
+         let collection_clone = collection.to_string();
+         let item_id_clone = item_id.to_string();
+         let file_clone = file.clone();
+         let progress_tx_clone = progress_tx.clone();
+         let semaphore_clone = Arc::clone(&semaphore);
+
+         let handle = tokio::spawn(async move {
+             // download_single_file now acquires the permit internally
+             download_single_file(
+                 &client_clone,
+                 &base_dir_clone,
+                 &collection_clone,
+                 &item_id_clone,
+                 &file_clone,
+                 progress_tx_clone,
+                 semaphore_clone, // Pass semaphore
+             ).await
+         });
+         file_join_handles.push(handle);
+     }
+
+     // Wait for all file downloads for this item to complete
+     for handle in file_join_handles {
+         match handle.await {
+             Ok(Ok(_)) => { /* File download task succeeded */ }
+             Ok(Err(_)) => { item_failed = true; } // File download function returned error
+             Err(_) => { item_failed = true; } // Task itself panicked or was cancelled
          }
      }
 
@@ -420,25 +447,24 @@ async fn download_collection(
         let base_dir_clone = base_dir.to_string();
         let collection_clone = collection.to_string();
         let progress_tx_clone = progress_tx.clone(); // Clone progress sender
-        let semaphore_clone = Arc::clone(&semaphore);
+        let semaphore_clone = Arc::clone(&semaphore); // Still need Arc for item task
         let item_id_clone = item_id.clone();
 
         let handle = tokio::spawn(async move {
-            // Acquire permit for this specific item download task
-            let permit = match semaphore_clone.acquire().await {
-                 Ok(p) => p,
-                 Err(_) => {
-                     let _ = progress_tx_clone.send(DownloadProgress::Error(format!("Semaphore closed for item {}", item_id_clone))).await;
-                     return Err(anyhow!("Semaphore closed")); // Return error from task
-                 }
-            };
+            // REMOVED: Permit acquisition moved into file download sub-tasks within download_item
 
-            // download_item now sends its own progress, including ItemCompleted which indicates success/failure
-            let item_result = download_item(&client_clone, &base_dir_clone, &collection_clone, &item_id_clone, progress_tx_clone.clone()).await;
+            // Pass semaphore down to download_item
+            let item_result = download_item(
+                &client_clone,
+                &base_dir_clone,
+                &collection_clone,
+                &item_id_clone,
+                progress_tx_clone.clone(),
+                semaphore_clone, // Pass semaphore
+            ).await;
 
-             // Permit dropped automatically when task scope ends
-             drop(permit);
-             item_result // Return the result of the item download
+             // Return the result of the item download
+             item_result
         });
         join_handles.push(handle);
     }
