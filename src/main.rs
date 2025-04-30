@@ -430,33 +430,51 @@ async fn download_single_file(
         return Err(anyhow!("Invalid download file path: {}", file_path.display()));
     }
 
-     let _ = progress_tx.send(DownloadProgress::Status(format!("Downloading: {}", file_details.name))).await;
+    info!("Downloading '{}' from {}", file_details.name, download_url);
+    let _ = progress_tx.send(DownloadProgress::Status(format!("Downloading: {}", file_details.name))).await;
 
     // Make the request
-    let response = client.get(&download_url).send().await.context("Failed to send download request")?;
+    let response = client.get(&download_url).send().await.context(format!("Failed to send download request for {}", file_details.name))?;
 
     if !response.status().is_success() {
-        let err_msg = format!("Download failed for {}: Status {}", file_details.name, response.status());
-         let _ = progress_tx.send(DownloadProgress::Error(err_msg.clone())).await; // Send error via progress channel
+        let status = response.status();
+        let err_msg = format!("Download request failed for '{}': Status {}", file_details.name, status);
+        error!("{}", err_msg);
+        let _ = progress_tx.send(DownloadProgress::Error(err_msg.clone())).await; // Send error via progress channel
         return Err(anyhow!(err_msg));
     }
 
     // Stream the response body to the file
     // Explicitly use tokio::fs::File::create for async operation
-    let mut dest = tokio::fs::File::create(&file_path).await.context("Failed to create target file")?;
+    debug!("Creating target file: {}", file_path.display());
+    let mut dest = tokio::fs::File::create(&file_path).await.context(format!("Failed to create target file '{}'", file_path.display()))?;
     let mut stream = response.bytes_stream();
+    let mut bytes_written: u64 = 0;
 
     while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.context("Failed to read download chunk")?;
-        dest.write_all(&chunk).await.context("Failed to write chunk to file")?;
-        // Send byte count update
-        let _ = progress_tx.send(DownloadProgress::BytesDownloaded(chunk.len() as u64)).await;
+        match chunk_result {
+            Ok(chunk) => {
+                let chunk_len = chunk.len() as u64;
+                if let Err(e) = dest.write_all(&chunk).await {
+                    error!("Failed to write chunk to file '{}': {}", file_path.display(), e);
+                    return Err(e).context(format!("Failed to write chunk to file '{}'", file_path.display()));
+                }
+                bytes_written += chunk_len;
+                // Send byte count update
+                let _ = progress_tx.send(DownloadProgress::BytesDownloaded(chunk_len)).await;
+            }
+            Err(e) => {
+                 error!("Failed to read download chunk for '{}': {}", file_details.name, e);
+                 return Err(e).context(format!("Failed to read download chunk for '{}'", file_details.name));
+            }
+        }
     }
 
+    info!("Successfully downloaded file '{}' ({} bytes)", file_details.name, bytes_written);
     // Send completion via progress channel
     let _ = progress_tx.send(DownloadProgress::FileCompleted(file_details.name.clone())).await;
 
-    // Permit is dropped automatically when _permit goes out of scope here.
+    debug!("Releasing download permit for file: {}", file_details.name); // Log before permit is dropped
     Ok(())
 }
 
