@@ -268,10 +268,38 @@ async fn download_single_file(
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>, // Add semaphore
 ) -> Result<()> {
-    // Acquire permit for this single file download
+    // --- Idempotency Check (Moved Before Permit Acquisition) ---
+    let file_path = Path::new(base_dir).join(collection).join(item_id).join(&file_details.name);
+    let expected_size_str = file_details.size.as_deref();
+    let expected_size: Option<u64> = expected_size_str.and_then(|s| s.parse().ok());
+
+    if let Some(expected) = expected_size {
+        if let Ok(metadata) = fs::metadata(&file_path).await {
+            if metadata.is_file() && metadata.len() == expected {
+                // Send FileCompleted immediately if skipped
+                let _ = progress_tx.send(DownloadProgress::FileCompleted(file_details.name.clone())).await;
+                // Also send a status message for clarity
+                let _ = progress_tx.send(DownloadProgress::Status(format!("Skipping (exists): {}", file_details.name))).await;
+                return Ok(()); // File exists and size matches, skip download - NO PERMIT USED
+            }
+        }
+        // If metadata check fails or size mismatch, continue to acquire permit and download
+    } else {
+         // If expected size is unknown, we still need to acquire permit before checking/downloading
+         // Log warning later if needed after acquiring permit
+    }
+    // --- End Idempotency Check ---
+
+
+    // Acquire permit *only if* we might actually download
     let permit = semaphore.acquire().await.context("Failed to acquire download permit")?;
 
-    let file_path = Path::new(base_dir).join(collection).join(item_id).join(&file_details.name);
+    // Log unknown size warning *after* acquiring permit if necessary
+    if expected_size.is_none() {
+        let _ = progress_tx.send(DownloadProgress::Status(format!("Warning: Unknown size for {}, downloading anyway", file_details.name))).await;
+    }
+
+
     let download_url = format!(
         "https://archive.org/download/{}/{}",
         item_id,
