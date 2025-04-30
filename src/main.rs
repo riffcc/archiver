@@ -316,26 +316,7 @@ async fn download_single_file(
         fs::create_dir_all(parent_dir).await.context("Failed to create download directory")?;
     }
 
-    // --- Idempotency Check ---
-    let expected_size_str = file_details.size.as_deref();
-    let expected_size: Option<u64> = expected_size_str.and_then(|s| s.parse().ok());
-
-    if let Some(expected) = expected_size {
-        if let Ok(metadata) = fs::metadata(&file_path).await {
-            if metadata.is_file() && metadata.len() == expected {
-                // Send FileCompleted immediately if skipped
-                let _ = progress_tx.send(DownloadProgress::FileCompleted(file_details.name.clone())).await;
-                // Also send a status message for clarity
-                let _ = progress_tx.send(DownloadProgress::Status(format!("Skipping (exists): {}", file_details.name))).await;
-                return Ok(()); // File exists and size matches, skip download
-            }
-        }
-        // If metadata check fails or size mismatch, continue to download
-    } else {
-         // If expected size is unknown, download anyway (or log a warning?)
-         let _ = progress_tx.send(DownloadProgress::Status(format!("Warning: Unknown size for {}, downloading anyway", file_details.name))).await;
-    }
-    // --- End Idempotency Check ---
+    // Removed duplicate idempotency check block below
 
      let _ = progress_tx.send(DownloadProgress::Status(format!("Downloading: {}", file_details.name))).await;
 
