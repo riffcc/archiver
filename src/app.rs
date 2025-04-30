@@ -1,6 +1,5 @@
 use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
-use crate::settings::Settings;
-use crate::settings::Settings;
+use crate::settings::Settings; // Keep only one import
 use ratatui::widgets::ListState;
 use reqwest::Client;
 use std::{path::PathBuf, time::Instant}; // Add Instant
