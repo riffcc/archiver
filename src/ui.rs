@@ -352,9 +352,108 @@ fn render_file_list_pane(app: &mut App, frame: &mut Frame, area: Rect) {
             )
             .highlight_symbol("> ");
 
-        frame.render_stateful_widget(list, inner_area, &mut app.file_list_state);
+        // Render list inside the block's area
+        frame.render_stateful_widget(list, block.inner(area), &mut app.file_list_state);
     }
 }
+
+/// Helper function to create a centered rectangle for popups.
+fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - height) / 2), // Empty space above
+            Constraint::Length(height),                 // Popup height
+            Constraint::Percentage((100 - height) / 2), // Empty space below
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2), // Empty space left
+            Constraint::Percentage(percent_x),             // Popup width
+            Constraint::Percentage((100 - percent_x) / 2), // Empty space right
+        ])
+        .split(popup_layout[1])[1] // Take the middle horizontal chunk
+}
+
+/// Renders a centered input box overlay for editing a setting.
+fn render_editing_setting_input(app: &mut App, frame: &mut Frame) {
+    let area = centered_rect(60, 3, frame.size()); // Adjust size as needed
+
+    let input_prompt = "Edit Value: ";
+    let input_text = format!("{}{}", input_prompt, app.editing_setting_input);
+
+    let input = Paragraph::new(input_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Editing Setting (Enter: Save, Esc: Cancel)")
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+
+    frame.render_widget(Clear, area); // Clear the area behind the input box
+    frame.render_widget(input, area);
+
+    // Set cursor position
+    frame.set_cursor_position((
+        area.x + app.cursor_position as u16 + input_prompt.len() as u16,
+        area.y + 1,
+    ));
+}
+
+/// Renders a centered input box overlay for adding a new collection.
+fn render_add_collection_input(app: &mut App, frame: &mut Frame) {
+    let area = centered_rect(60, 3, frame.size()); // Adjust size as needed
+
+    let input_prompt = "Collection ID: ";
+    let input_text = format!("{}{}", input_prompt, app.add_collection_input);
+
+    let input = Paragraph::new(input_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Add Collection (Enter: Save, Esc: Cancel)")
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+
+    frame.render_widget(Clear, area); // Clear the area behind the input box
+    frame.render_widget(input, area);
+
+    // Set cursor position
+    frame.set_cursor_position((
+        area.x + app.add_collection_cursor_pos as u16 + input_prompt.len() as u16,
+        area.y + 1,
+    ));
+}
+
+/// Renders a centered input box overlay for asking the download directory.
+fn render_ask_download_dir_input(app: &mut App, frame: &mut Frame) {
+    let area = centered_rect(80, 3, frame.size()); // Adjust size as needed
+
+    let input_prompt = "Download Path: ";
+    // Reuse editing_setting_input for this temporary input
+    let input_text = format!("{}{}", input_prompt, app.editing_setting_input);
+
+    let input = Paragraph::new(input_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Set Download Directory (Enter: Save, Esc: Cancel)")
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+
+    frame.render_widget(Clear, area); // Clear the area behind the input box
+    frame.render_widget(input, area);
+
+    // Set cursor position (reuse cursor_position from editing setting)
+    frame.set_cursor_position((
+        area.x + app.cursor_position as u16 + input_prompt.len() as u16,
+        area.y + 1,
+    ));
+}
+
 
 /// Renders the settings view.
 fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -364,7 +463,7 @@ fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
         .border_style(Style::default().fg(Color::Magenta)); // Distinct border color
 
     let inner_area = settings_block.inner(area);
-    frame.render_widget(settings_block, area);
+    frame.render_widget(settings_block.clone(), area); // Render the block itself
 
     // Define settings items
     let download_dir_text = format!(
