@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use log::{error, info, warn, LevelFilter}; // Import log macros and LevelFilter
+use log::{debug, error, info, warn, LevelFilter}; // Import log macros (added debug)
 use rust_tui_app::{
     app::{App, DownloadAction, DownloadProgress, UpdateAction},
     archive_api::{self, ArchiveDoc, ItemDetails}, // Removed FileDetails
