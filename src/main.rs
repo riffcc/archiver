@@ -203,7 +203,10 @@ async fn main() -> Result<()> {
 
                  // Update App state based on progress message
                  match status {
-                     // Removed CollectionInfo handler
+                     DownloadProgress::CollectionInfo(total) => { // Add handler for CollectionInfo
+                        app.total_items_to_download = Some(total);
+                        // Keep existing status message or update if desired
+                    }
                      DownloadProgress::ItemStarted(id) => {
                          app.download_status = Some(format!("Starting: {}", id));
                      }
