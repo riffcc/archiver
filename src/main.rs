@@ -116,15 +116,15 @@ async fn main() -> Result<()> {
                                             // Proceed with the download action directly
                                             let result = match download_action {
                                                 DownloadAction::ItemAllFiles(id) => {
-                                                    // Removed semaphore argument from call
-                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, progress_tx_clone.clone()).await
+                                                    // Pass semaphore down
+                                                    download_item(&client_clone, &base_dir_clone, &collection_clone, &id, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::File(id, file) => {
-                                                    // Removed semaphore argument from call
-                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, progress_tx_clone.clone()).await
+                                                    // Pass semaphore down
+                                                    download_single_file(&client_clone, &base_dir_clone, &collection_clone, &id, &file, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::Collection => {
-                                                     // Pass semaphore down
+                                                     // Pass semaphore down (already correct)
                                                      download_collection(&client_clone, &base_dir_clone, &collection_clone, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                             };
@@ -266,7 +266,7 @@ async fn download_single_file(
     item_id: &str,
     file_details: &archive_api::FileDetails,
     progress_tx: mpsc::Sender<DownloadProgress>,
-    // Removed semaphore parameter
+    semaphore: Arc<Semaphore>, // Add semaphore parameter back
 ) -> Result<()> {
     // --- Idempotency Check ---
     let file_path = Path::new(base_dir).join(collection).join(item_id).join(&file_details.name);
@@ -290,8 +290,13 @@ async fn download_single_file(
     }
     // --- End Idempotency Check ---
 
+    // --- Acquire Semaphore Permit ---
+    // Acquire permit *before* making network request or creating file.
+    // The permit is stored in `_permit` and will be dropped automatically
+    // when this function returns (success or error).
+    let _permit = semaphore.acquire_owned().await.context("Failed to acquire download semaphore permit")?;
+    // --- Permit Acquired ---
 
-    // REMOVED: Permit acquisition logic
 
     // Log unknown size warning if necessary
     if expected_size.is_none() {
@@ -342,7 +347,7 @@ async fn download_single_file(
     // Send completion via progress channel
     let _ = progress_tx.send(DownloadProgress::FileCompleted(file_details.name.clone())).await;
 
-    // REMOVED: Permit drop logic
+    // Permit is dropped automatically when _permit goes out of scope here.
     Ok(())
 }
 
@@ -353,7 +358,7 @@ async fn download_item(
     collection: &str,
     item_id: &str,
     progress_tx: mpsc::Sender<DownloadProgress>,
-    // Removed semaphore parameter
+    semaphore: Arc<Semaphore>, // Add semaphore parameter back
 ) -> Result<()> {
      let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
      // Fetch item details first to get the file list
@@ -374,33 +379,53 @@ async fn download_item(
      let item_dir = Path::new(base_dir).join(collection).join(item_id);
      fs::create_dir_all(&item_dir).await.context("Failed to create item directory")?;
 
-     // Removed unused success_count
-     let mut item_failed = false;
-     // Removed file_join_handles
+     let mut file_join_handles = vec![];
+     let mut item_failed = false; // Track if any file task fails
 
-     // Download files sequentially within this item task
-     for file in details.files.iter() {
-         // Clone only necessary data for sequential call
+     // Spawn a download task for each file concurrently
+     for file in details.files { // Iterate by value to move into tasks
+         // Clone necessary data for the file download task
+         let client_clone = client.clone();
+         let base_dir_clone = base_dir.to_string();
+         let collection_clone = collection.to_string();
+         let item_id_clone = item_id.to_string();
          let progress_tx_clone = progress_tx.clone();
-         // Removed semaphore clone
+         let semaphore_clone = Arc::clone(&semaphore); // Clone Arc for the task
+         let file_clone = file.clone(); // Clone file details
 
-         // Call download_single_file directly (it no longer needs/uses semaphore)
-         if let Err(e) = download_single_file(
-             client, // Use original client
-             base_dir,
-             collection,
-             item_id,
-             file,
-             progress_tx_clone,
-             // Removed semaphore argument
-         ).await {
-             item_failed = true;
-             // Error message already sent by download_single_file
-             let _ = progress_tx.send(DownloadProgress::Status(format!("Continuing item {} after error on file {}: {}", item_id, file.name, e))).await;
+         let handle = tokio::spawn(async move {
+             // Call download_single_file, which now acquires the semaphore permit
+             download_single_file(
+                 &client_clone,
+                 &base_dir_clone,
+                 &collection_clone,
+                 &item_id_clone,
+                 &file_clone, // Pass cloned file details
+                 progress_tx_clone,
+                 semaphore_clone, // Pass semaphore for acquisition
+             )
+             .await
+         });
+         file_join_handles.push(handle);
+     }
+
+     // Wait for all file download tasks for this item to complete
+     for handle in file_join_handles {
+         match handle.await {
+             Ok(Ok(_)) => { /* File download task succeeded */ }
+             Ok(Err(e)) => {
+                 item_failed = true;
+                 // Error message already sent by download_single_file, but maybe log context here?
+                 let _ = progress_tx.send(DownloadProgress::Status(format!("File download failed within item {}: {}", item_id, e))).await;
+             }
+             Err(e) => { // Task panicked or was cancelled
+                 item_failed = true;
+                 let _ = progress_tx.send(DownloadProgress::Error(format!("File download task panicked for item {}: {}", item_id, e))).await;
+             }
          }
      }
 
-     // Send item completion status
+     // Send item completion status based on whether any file task failed
      let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), !item_failed)).await;
 
      Ok(()) // Return Ok even if some files failed, ItemCompleted indicates success/failure
@@ -444,34 +469,27 @@ async fn download_collection(
         let collection_clone = collection.to_string();
         let progress_tx_clone = progress_tx.clone();
         let semaphore_clone = Arc::clone(&semaphore); // Clone Arc for the task
-        let item_id_clone = item_id.clone();
+        let item_id_clone = item_id.clone(); // Keep this clone
 
         let handle = tokio::spawn(async move {
-            // Acquire permit *before* processing this item
-            let permit = match semaphore_clone.acquire().await {
-                Ok(p) => p,
-                Err(_) => {
-                    let _ = progress_tx_clone.send(DownloadProgress::Error(format!("Semaphore closed for item {}", item_id_clone))).await;
-                    return Err(anyhow!("Semaphore closed")); // Return error from task
-                }
-            };
+            // REMOVED: Semaphore acquisition at item level.
 
-            // Process the item (fetch details, download files sequentially)
-            // No longer pass semaphore down to download_item
+            // Process the item: fetch details, spawn file download tasks.
+            // Pass the semaphore down for file tasks to acquire permits individually.
             let item_result = download_item(
                 &client_clone,
                 &base_dir_clone,
                 &collection_clone,
                 &item_id_clone,
                 progress_tx_clone.clone(),
-                // Removed semaphore argument
-            ).await;
+                semaphore_clone, // Pass semaphore down
+            )
+            .await;
 
-            // Permit dropped automatically when task scope ends
-            drop(permit);
-            item_result // Return the result of the item download
+            // REMOVED: Permit drop logic.
+            item_result // Return the result of the item download processing (spawning files)
         });
-        join_handles.push(handle);
+        join_handles.push(handle); // Keep collecting handles
     }
 
     // Wait for all spawned item processing tasks to complete and count failures
