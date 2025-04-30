@@ -203,10 +203,7 @@ async fn main() -> Result<()> {
 
                  // Update App state based on progress message
                  match status {
-                      DownloadProgress::CollectionInfo(total) => {
-                         app.total_items_to_download = Some(total);
-                         // Keep existing status message or update if desired
-                     }
+                     // Removed CollectionInfo handler
                      DownloadProgress::ItemStarted(id) => {
                          app.download_status = Some(format!("Starting: {}", id));
                      }
@@ -396,8 +393,8 @@ async fn download_collection(
     }
 
     let total_items = all_identifiers.len();
-    // Send the total count back to the main thread *before* queueing
-    let _ = progress_tx.send(DownloadProgress::CollectionInfo(total_items)).await;
+    // Remove sending CollectionInfo - total is set in app state by update()
+    // let _ = progress_tx.send(DownloadProgress::CollectionInfo(total_items)).await;
     let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} items for: {}", total_items, collection))).await;
 
     let mut join_handles = vec![];
