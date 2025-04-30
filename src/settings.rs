@@ -63,7 +63,10 @@ fn load_settings_from_path(config_path: &PathBuf) -> Result<Settings> {
     }
 
     let settings = config::Config::builder()
-        .add_source(config::File::from(config_path.clone())) // Clone path for File source
+        // Make the file source optional for the builder.
+        // If the file exists (as expected in the test), it will be loaded.
+        // If not, build() won't error, and try_deserialize will likely use defaults.
+        .add_source(config::File::from(config_path.clone()).required(false))
         .build()?
         .try_deserialize::<Settings>()?;
 
