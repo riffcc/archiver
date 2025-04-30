@@ -330,8 +330,8 @@ async fn main() -> Result<()> {
 
 // --- Download Helper Functions ---
 
-use std::path::Path;
-use tokio::fs::{self, File};
+// Removed redundant imports: use std::path::Path; and use tokio::fs::{self, File};
+// The necessary items (std::path::Path, tokio::fs) are already imported at the top or used via module path.
 use tokio::io::AsyncWriteExt;
 use futures_util::StreamExt;
 
@@ -417,7 +417,8 @@ async fn download_single_file(
     }
 
     // Stream the response body to the file
-    let mut dest = File::create(&file_path).await.context("Failed to create target file")?;
+    // Explicitly use tokio::fs::File::create for async operation
+    let mut dest = tokio::fs::File::create(&file_path).await.context("Failed to create target file")?;
     let mut stream = response.bytes_stream();
 
     while let Some(chunk_result) = stream.next().await {
