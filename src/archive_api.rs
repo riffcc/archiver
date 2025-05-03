@@ -1,9 +1,12 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn}; // Import log macros
+use governor::{RateLimiter, clock::DefaultClock, state::direct::NotKeyed, middleware::NoOpMiddleware}; // Rate Limiting
+use log::{debug, error, info, warn}; // Import log macros
 use reqwest::Client;
 use serde::Deserialize;
-use std::collections::HashMap; // For handling arbitrary metadata fields
+use std::{collections::HashMap, sync::Arc, time::Instant}; // Add Arc, Instant
 use tokio::time::{sleep, Duration as TokioDuration}; // Import sleep and Tokio Duration for retries
+use crate::app::AppRateLimiter; // Use the type alias from app.rs
 
 const ADVANCED_SEARCH_URL: &str = "https://archive.org/advancedsearch.php";
 const METADATA_URL_BASE: &str = "https://archive.org/metadata/";
@@ -115,7 +118,8 @@ pub async fn fetch_collection_items(
     collection_name: &str,
     rows: usize, // Number of results per page
     page: usize, // Page number (1-based)
-) -> Result<(Vec<ArchiveDoc>, usize)> { // Return tuple: (docs, total_found)
+    rate_limiter: AppRateLimiter, // Added rate limiter parameter
+) -> Result<(Vec<ArchiveDoc>, usize)> {
     info!("Fetching collection items for '{}', page {}, rows {}", collection_name, page, rows);
     let query = format!("collection:{}", collection_name);
     // let start = (page - 1) * rows; // API uses 0-based start index
@@ -130,6 +134,12 @@ pub async fn fetch_collection_items(
             ("page", &page.to_string()), // Note: API might use 'start' instead of 'page' depending on endpoint version/preference
             ("output", "json"),
         ]);
+
+    // --- Wait for Rate Limiter ---
+    debug!("Waiting for rate limit permit for collection items: {}", collection_name);
+    rate_limiter.until_ready().await;
+    debug!("Acquired rate limit permit for collection items: {}", collection_name);
+    // --- Rate Limit Permit Acquired ---
 
     debug!("Sending collection items request: {:?}", request_builder);
     let response = request_builder.send().await.context("Failed to send collection items request")?;
@@ -152,7 +162,11 @@ pub async fn fetch_collection_items(
 }
 
 /// Fetches detailed metadata and file list for a given item identifier, with retries.
-pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<ItemDetails> {
+pub async fn fetch_item_details(
+    client: &Client,
+    identifier: &str,
+    rate_limiter: AppRateLimiter, // Added rate limiter parameter
+) -> Result<ItemDetails> {
     info!("Fetching item details for identifier: {}", identifier);
     let url = format!("{}{}", METADATA_URL_BASE, identifier);
     let max_retries = 3;
@@ -339,6 +353,7 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
 pub async fn fetch_all_collection_identifiers(
     client: &Client,
     collection_name: &str,
+    rate_limiter: AppRateLimiter, // Added rate limiter parameter
 ) -> Result<Vec<String>> {
     info!("Fetching all identifiers for collection: {}", collection_name);
     let mut all_identifiers = Vec::new();
@@ -410,8 +425,11 @@ pub async fn fetch_all_collection_identifiers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::AppRateLimiter; // Use the type alias
+    use governor::{Quota, RateLimiter}; // Import governor items for tests
+    use nonzero_ext::nonzero; // For Quota::per_minute in test limiter
     use reqwest::Client;
-    use std::time::Duration; // Import Duration for timeouts
+    use std::{num::NonZeroU32, sync::Arc, time::Duration}; // Import Arc, NonZeroU32
     use tokio;
 
     // Helper function to create a client with timeouts for tests
@@ -421,6 +439,11 @@ mod tests {
             .connect_timeout(Duration::from_secs(60))
             .build()
             .expect("Failed to build test client")
+    }
+
+    // Helper function to create a dummy rate limiter for tests (allows all requests)
+    fn test_limiter() -> AppRateLimiter {
+        Arc::new(RateLimiter::direct(Quota::infinite()))
     }
 
     // --- Integration Tests (require network access to archive.org) ---
@@ -434,9 +457,10 @@ mod tests {
         let collection_name = "nasa"; // A known, large collection
         let rows = 5; // Fetch a small number of rows
         let page = 1;
+        let limiter = test_limiter(); // Create dummy limiter
 
         // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page).await;
+        let result = fetch_collection_items(&client, collection_name, rows, page, Arc::clone(&limiter)).await;
 
         // Assert
         assert!(result.is_ok(), "API call should succeed");
@@ -447,7 +471,7 @@ mod tests {
         assert!(items.iter().all(|doc| !doc.identifier.is_empty()), "All items should have an identifier");
 
         // Fetch page 2 and check if identifiers are different (basic pagination check)
-        let page2_result = fetch_collection_items(&client, collection_name, rows, page + 1).await;
+        let page2_result = fetch_collection_items(&client, collection_name, rows, page + 1, Arc::clone(&limiter)).await;
         assert!(page2_result.is_ok(), "API call for page 2 should succeed");
         let (page2_items, page2_total_found) = page2_result.unwrap(); // Destructure page 2 result
         assert_eq!(total_found, page2_total_found, "Total found should be consistent across pages");
@@ -466,9 +490,10 @@ mod tests {
         let collection_name = "this_collection_should_really_not_exist_12345";
         let rows = 10;
         let page = 1;
+        let limiter = test_limiter(); // Create dummy limiter
 
         // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page).await;
+        let result = fetch_collection_items(&client, collection_name, rows, page, limiter).await;
 
         // Assert
         assert!(result.is_ok(), "API call should still succeed even if no items are found");
@@ -486,9 +511,10 @@ mod tests {
         let collection_name = "invalid collection name with spaces";
         let rows = 10;
         let page = 1;
+        let limiter = test_limiter(); // Create dummy limiter
 
         // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page).await;
+        let result = fetch_collection_items(&client, collection_name, rows, page, limiter).await;
 
         // Assert
         // We expect the API call to succeed but return no results for such a name
@@ -507,9 +533,10 @@ mod tests {
         let client = test_client(); // Use helper function
         // Using the item provided by the user
         let identifier = "enrmp270_litmus_-_perception_of_light";
+        let limiter = test_limiter(); // Create dummy limiter
 
         // Act
-        let result = fetch_item_details(&client, identifier).await;
+        let result = fetch_item_details(&client, identifier, limiter).await;
 
         // Assert
         assert!(result.is_ok(), "API call should succeed: {:?}", result.err());
@@ -537,9 +564,10 @@ mod tests {
         // Arrange
         let client = test_client(); // Use helper function
         let identifier = "this_item_definitely_does_not_exist_98765";
+        let limiter = test_limiter(); // Create dummy limiter
 
         // Act
-        let result = fetch_item_details(&client, identifier).await;
+        let result = fetch_item_details(&client, identifier, limiter).await;
 
         // Assert
         // The metadata API often returns 200 OK with empty/null data for non-existent items.
@@ -562,9 +590,10 @@ mod tests {
         let collection_name = "nasa";
         let rows = 1; // Only need 1 row to get the total count
         let page = 1;
+        let limiter = test_limiter(); // Create dummy limiter
 
         // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page).await;
+        let result = fetch_collection_items(&client, collection_name, rows, page, limiter).await;
 
         // Assert
         assert!(result.is_ok(), "API call should succeed");
@@ -580,9 +609,10 @@ mod tests {
         let collection_name = "this_collection_definitely_does_not_exist_1234567890";
         let rows = 1;
         let page = 1;
+        let limiter = test_limiter(); // Create dummy limiter
 
         // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page).await;
+        let result = fetch_collection_items(&client, collection_name, rows, page, limiter).await;
 
         // Assert
         assert!(result.is_ok(), "API call should succeed even for non-existent collection");

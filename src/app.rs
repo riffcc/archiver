@@ -1,8 +1,12 @@
 use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
 use crate::settings::Settings;
+use governor::{RateLimiter, clock::DefaultClock, state::direct::NotKeyed, middleware::NoOpMiddleware}; // Rate Limiting
 use ratatui::widgets::ListState;
 use reqwest::Client;
-use std::{path::PathBuf, time::{Instant, Duration}}; // Add Duration
+use std::{path::PathBuf, sync::Arc, time::{Instant, Duration}}; // Add Arc, Duration
+
+/// Type alias for the specific RateLimiter used in the app
+pub type AppRateLimiter = Arc<RateLimiter<NotKeyed, governor::state::direct::InMemoryState, DefaultClock, NoOpMiddleware<Instant>>>;
 
 /// Represents the different states or modes the application can be in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,6 +108,8 @@ pub struct App {
     pub add_collection_input: String,
     /// Cursor position for the add collection input
     pub add_collection_cursor_pos: usize,
+    /// Shared global rate limiter for API calls and downloads
+    pub rate_limiter: AppRateLimiter,
 }
 
 /// Actions that the main loop should perform based on user input.
@@ -155,7 +161,7 @@ pub enum DownloadProgress {
 
 impl App {
     /// Constructs a new instance of [`App`].
-    pub fn new() -> Self {
+    pub fn new(rate_limiter: AppRateLimiter) -> Self { // Accept rate limiter
         // Configure Reqwest client with increased timeouts
         let client = Client::builder()
             .timeout(Duration::from_secs(60)) // General request timeout (increased to 60s)
