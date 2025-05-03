@@ -548,7 +548,7 @@ mod tests {
     use crate::app::AppRateLimiter; // Use the type alias
     use governor::{Quota, RateLimiter, clock::SystemClock};
     use reqwest::Client;
-    use std::{sync::Arc, time::Duration, num::NonZeroU32};
+    use std::{error::Error, sync::Arc, time::Duration, num::NonZeroU32}; // Import std::error::Error
     use tokio;
 
     // Helper function to create a client with timeouts for tests
@@ -665,6 +665,8 @@ mod tests {
         // Assert
         if let Err(ref e) = result {
              eprintln!("Fetch details error: {}", e); // Print error details if it fails
+             // Call source() directly on 'e' (which is &FetchDetailsError)
+             // Requires std::error::Error trait to be in scope
              if let Some(source) = e.source() {
                  eprintln!("Source: {}", source);
              }
