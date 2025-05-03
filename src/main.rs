@@ -834,12 +834,54 @@ async fn download_collection(
     if !use_cache {
         info!("Fetching identifiers from API for collection: {}", collection_id);
         let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers from API: {}", collection_id))).await;
+
+        // --- Use incremental fetch to get identifiers ---
+        let (temp_fetch_tx, mut temp_fetch_rx) = mpsc::channel::<FetchAllResult>(10);
+        let client_clone_ids = client.clone();
+        let collection_id_clone_ids = collection_id.to_string();
         let limiter_clone_ids = Arc::clone(&rate_limiter);
-        match archive_api::fetch_all_collection_identifiers(client, collection_id, limiter_clone_ids).await {
-            Ok(ids) => {
-                all_identifiers = ids;
-                // 3. Save fetched identifiers to cache
-                if !all_identifiers.is_empty() {
+
+        tokio::spawn(async move {
+            archive_api::fetch_all_collection_items_incremental(
+                &client_clone_ids,
+                &collection_id_clone_ids,
+                limiter_clone_ids,
+                temp_fetch_tx,
+            )
+            .await;
+        });
+
+        let mut fetched_items: Vec<ArchiveDoc> = Vec::new();
+        let mut fetch_error: Option<String> = None;
+
+        while let Some(result) = temp_fetch_rx.recv().await {
+            match result {
+                FetchAllResult::Items(batch) => {
+                    fetched_items.extend(batch);
+                }
+                FetchAllResult::Error(msg) => {
+                    error!("Error during identifier fetch for collection '{}': {}", collection_id, msg);
+                    fetch_error = Some(msg);
+                    break; // Stop receiving on error
+                }
+                FetchAllResult::TotalItems(_) => {
+                    // Ignore total count here, we just need the identifiers
+                }
+            }
+        }
+        // --- End incremental fetch ---
+
+        if let Some(err_msg) = fetch_error {
+            // Propagate error if fetch failed
+            let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to get identifiers for {}: {}", collection_id, err_msg))).await;
+            let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
+            return Err(anyhow!("Failed fetching identifiers for collection '{}': {}", collection_id, err_msg));
+        } else {
+            // Extract identifiers from fetched items
+            all_identifiers = fetched_items.into_iter().map(|doc| doc.identifier).collect();
+
+            // 3. Save fetched identifiers to cache
+            if !all_identifiers.is_empty() {
                     match serde_json::to_string_pretty(&all_identifiers) {
                         Ok(json_data) => {
                             // Ensure parent directory exists (should already from download setup, but good practice)
@@ -870,18 +912,11 @@ async fn download_collection(
                             warn!("Failed to serialize identifiers to JSON for caching: {}", e);
                         }
                     }
-                } else {
-                     info!("No identifiers fetched from API, cache file not created/updated.");
                 }
+            } else {
+                 info!("No identifiers fetched from API, cache file not created/updated.");
             }
-            Err(e) => {
-                error!("Failed to fetch identifiers for collection '{}': {}", collection_id, e);
-                let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to get identifiers for {}: {}", collection_id, e))).await;
-                // Send CollectionCompleted with 0/0 since we couldn't even start
-                let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
-                return Err(e).context(format!("Failed fetching identifiers for collection '{}'", collection_id));
-            }
-        };
+        } // End of fetch_error check block
     }
     // --- End Identifier Caching Logic ---
 
