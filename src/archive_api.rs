@@ -1,10 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn}; // Import log macros
-use governor::{RateLimiter, clock::DefaultClock, state::direct::NotKeyed, middleware::NoOpMiddleware}; // Rate Limiting
-use log::{debug, error, info, warn}; // Import log macros
+// Removed unused governor imports here, AppRateLimiter alias is used
 use reqwest::Client;
 use serde::Deserialize;
-use std::{collections::HashMap, sync::Arc, time::Instant}; // Add Arc, Instant
+use std::{collections::HashMap, sync::Arc}; // Removed unused time::Instant
 use tokio::time::{sleep, Duration as TokioDuration}; // Import sleep and Tokio Duration for retries
 use crate::app::AppRateLimiter; // Use the type alias from app.rs
 

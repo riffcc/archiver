@@ -1,17 +1,19 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn}; // Import log macros (removed LevelFilter)
 use rust_tui_app::{
-    app::{App, DownloadAction, DownloadProgress, UpdateAction},
-    archive_api::{self, ArchiveDoc, ItemDetails}, // Removed unused FileDetails import
+use rust_tui_app::{
+    app::{App, AppRateLimiter, DownloadAction, DownloadProgress, UpdateAction}, // Import AppRateLimiter
+    archive_api::{self, ArchiveDoc, ItemDetails},
     event::{Event, EventHandler},
-    settings::{self, DownloadMode}, // Import DownloadMode
+    settings::{self, DownloadMode},
     tui::Tui,
     update::update,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use governor::{Quota, RateLimiter, Jitter, state::keyed::DefaultKeyedRateLimiter, clock::DefaultClock, state::direct::NotKeyed}; // Rate Limiting
-use governor::middleware::NoOpMiddleware; // Rate Limiting
-use nonzero_ext::nonzero; // For Quota::per_minute
+// Use SystemClock here to match the AppRateLimiter definition
+use governor::{Quota, RateLimiter, clock::SystemClock, state::direct::NotKeyed};
+use governor::middleware::NoOpMiddleware;
+use nonzero_ext::nonzero;
 use reqwest::Client;
 use simplelog::{Config, WriteLogger, LevelFilter}; // Import necessary simplelog items
 use std::{fs::File, io, num::NonZeroU32, path::Path, sync::Arc, time::Instant}; // Add NonZeroU32, File, Path
@@ -64,10 +66,10 @@ async fn main() -> Result<()> {
 
     // --- Rate Limiter Setup ---
     // Allow 15 requests per minute. Use Arc for sharing.
-    // Using DefaultClock, NotKeyed state store, and NoOpMiddleware.
+    // Using SystemClock to match AppRateLimiter type alias.
     let quota = Quota::per_minute(NonZeroU32::new(15).unwrap());
-    let rate_limiter: Arc<RateLimiter<NotKeyed, governor::state::direct::InMemoryState, DefaultClock, NoOpMiddleware<Instant>>> =
-        Arc::new(RateLimiter::direct(quota));
+    // Explicitly type with AppRateLimiter alias and use SystemClock
+    let rate_limiter: AppRateLimiter = Arc::new(RateLimiter::direct_with_clock(quota, &SystemClock::default()));
 
 
     // Create an application, load settings, and pass the rate limiter.
@@ -365,7 +367,7 @@ async fn download_single_file(
     file_details: &archive_api::FileDetails,
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>,
-    rate_limiter: Arc<RateLimiter<NotKeyed, governor::state::direct::InMemoryState, DefaultClock, NoOpMiddleware<Instant>>>, // Added rate limiter
+    rate_limiter: AppRateLimiter, // Use the type alias
 ) -> Result<()> {
     let collection_str = collection_id.unwrap_or("<none>");
     info!("Starting download_single_file: collection='{}', item='{}', file='{}'",
@@ -512,7 +514,7 @@ async fn download_item(
     mode: DownloadMode, // Added: Download mode
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>,
-    rate_limiter: Arc<RateLimiter<NotKeyed, governor::state::direct::InMemoryState, DefaultClock, NoOpMiddleware<Instant>>>, // Added rate limiter
+    rate_limiter: AppRateLimiter, // Use the type alias
 ) -> Result<()> {
     let collection_str = collection_id.unwrap_or("<none>");
     info!("Starting download_item: collection='{}', item='{}', mode='{:?}'", collection_str, item_id, mode);
@@ -701,7 +703,7 @@ async fn download_collection(
     mode: DownloadMode, // Added: Download mode
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>, // File download semaphore
-    rate_limiter: Arc<RateLimiter<NotKeyed, governor::state::direct::InMemoryState, DefaultClock, NoOpMiddleware<Instant>>>, // Added rate limiter
+    rate_limiter: AppRateLimiter, // Use the type alias
 ) -> Result<()> {
     info!("Starting download_collection for '{}', mode: {:?}", collection_id, mode);
     let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers for: {}", collection_id))).await;
