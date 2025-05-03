@@ -440,10 +440,10 @@ mod tests {
             .expect("Failed to build test client")
     }
 
-    // Helper function to create a dummy rate limiter for tests (allows all requests)
+    // Helper function to create a rate limiter for integration tests (respects API limits)
     fn test_limiter() -> AppRateLimiter {
-        // Use a very large quota instead of infinite()
-        let quota = Quota::per_hour(NonZeroU32::new(u32::MAX).unwrap());
+        // Use the actual 15 requests per minute quota for integration tests
+        let quota = Quota::per_minute(NonZeroU32::new(15).unwrap());
         // Use direct_with_clock and SystemClock to match the AppRateLimiter type alias
         Arc::new(RateLimiter::direct_with_clock(quota, &SystemClock::default()))
     }
