@@ -559,7 +559,8 @@ async fn download_item(
                     archive_api::FetchDetailsErrorKind::ParseError |
                     archive_api::FetchDetailsErrorKind::ClientError(_) => {
                         error!("Permanent error fetching details for item '{}': {}. Skipping item.", item_id, e);
-                        let _ = progress_tx.send(DownloadProgress::Error(format!("Permanent error for {}: {}", item_id, e.kind))).await;
+                        // Use Debug format {:?} for e.kind
+                        let _ = progress_tx.send(DownloadProgress::Error(format!("Permanent error for {}: {:?}", item_id, e.kind))).await;
                         let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), false)).await; // Mark as failed
                         // Return Ok because the download_item task itself didn't panic, it just handled a permanent item error.
                         return Ok(());
