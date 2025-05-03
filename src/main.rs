@@ -1014,7 +1014,7 @@ async fn download_collection(
     let _ = progress_tx.send(DownloadProgress::CollectionCompleted(total_items, total_failed_items)).await;
 
     Ok(())
-}
+} // Re-adding the closing brace for download_collection
 
 // TODO: Implement multi-collection download logic using max_concurrent_collections semaphore.
 // This would likely involve another layer of task spawning in main.rs or a dedicated function.
