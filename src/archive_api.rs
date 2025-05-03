@@ -442,20 +442,26 @@ pub async fn fetch_item_details(
         }
         Err(e) => {
             // Error sending the request (network issue, timeout, etc.)
-            // Borrow 'e' here instead of moving it
-            let err = anyhow!(&e).context("Failed to send item details request");
-            error!("{} for identifier '{}'", err, identifier);
-            // Classify network errors using the original 'e'
-            let kind = if e.is_timeout() {
+            // Extract info from 'e' *before* moving it into anyhow!
+            let is_timeout = e.is_timeout();
+            let is_connect_or_request = e.is_connect() || e.is_request();
+
+            // Move 'e' into anyhow! now
+            let err = anyhow!(e).context("Failed to send item details request");
+            error!("{} for identifier '{}'", err, identifier); // Log the error created from 'e'
+
+            // Classify network errors using the extracted info
+            let kind = if is_timeout {
                 FetchDetailsErrorKind::NetworkError // Specifically timeout
-            } else if e.is_connect() || e.is_request() {
+            } else if is_connect_or_request {
                  FetchDetailsErrorKind::NetworkError // Other connection/request errors
             } else {
                  FetchDetailsErrorKind::Other // Other reqwest errors
             };
+
              Err(FetchDetailsError {
                 kind,
-                source: err,
+                source: err, // Use the anyhow error created above
                 identifier: identifier.to_string(),
             })
         }
