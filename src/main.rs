@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn}; // Import log macros (removed LevelFilter)
-use rust_tui_app::{
+// Corrected the duplicate use statement and added the closing brace
 use rust_tui_app::{
     app::{App, AppRateLimiter, DownloadAction, DownloadProgress, UpdateAction}, // Import AppRateLimiter
     archive_api::{self, ArchiveDoc, ItemDetails},
@@ -8,6 +8,7 @@ use rust_tui_app::{
     settings::{self, DownloadMode},
     tui::Tui,
     update::update,
+}; // Added missing closing brace
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 // Use SystemClock here to match the AppRateLimiter definition
