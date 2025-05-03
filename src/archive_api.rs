@@ -3,6 +3,7 @@ use log::{debug, error, info, warn}; // Import log macros
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap; // For handling arbitrary metadata fields
+use tokio::time::{sleep, Duration as TokioDuration}; // Import sleep and Tokio Duration for retries
 
 const ADVANCED_SEARCH_URL: &str = "https://archive.org/advancedsearch.php";
 const METADATA_URL_BASE: &str = "https://archive.org/metadata/";
@@ -150,149 +151,189 @@ pub async fn fetch_collection_items(
     Ok((search_result.response.docs, search_result.response.num_found))
 }
 
-/// Fetches detailed metadata and file list for a given item identifier.
+/// Fetches detailed metadata and file list for a given item identifier, with retries.
 pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<ItemDetails> {
     info!("Fetching item details for identifier: {}", identifier);
     let url = format!("{}{}", METADATA_URL_BASE, identifier);
-    debug!("Requesting item details from URL: {}", url);
+    let max_retries = 3;
+    let mut last_error: Option<anyhow::Error> = None;
 
-    let response = client.get(&url).send().await.context(format!("Failed to send item details request for '{}'", identifier))?;
+    for attempt in 1..=max_retries {
+        debug!("Requesting item details from URL: {} (Attempt {}/{})", url, attempt, max_retries);
+        match client.get(&url).send().await {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    let status = response.status();
+                    // Log non-success status but proceed to parse, as API might return OK with empty data for not found
+                    warn!(
+                        "Metadata API request for '{}' returned non-success status: {} (Attempt {}/{})",
+                        identifier, status, attempt, max_retries
+                    );
+                    // Fall through to parsing
+                }
 
-    if !response.status().is_success() {
-        let status = response.status();
-        // Log error but continue, as sometimes non-existent items return non-success but valid (empty) JSON
-        error!(
-            "Metadata API request for '{}' returned non-success status: {}",
-            identifier,
-            status
-        );
-        // We might still be able to parse the body, so don't return Err just yet.
-        // The parsing step below will handle actual errors.
+                // Attempt to parse the response regardless of status code (might contain useful error info or be empty)
+                let raw_details = match response.json::<ItemMetadataResponse>().await {
+                     Ok(details) => details,
+                     Err(e) => {
+                         let parse_err = anyhow!(e).context(format!(
+                             "Failed to parse JSON response for item details '{}' (Attempt {}/{})",
+                             identifier, attempt, max_retries
+                         ));
+                         error!("{}", parse_err); // Log the parsing error
+                         last_error = Some(parse_err);
+                         // Don't retry on parse errors, likely indicates bad data or API change
+                         break;
+                     }
+                 };
+
+                // --- Start of existing processing logic ---
+                // Helper function to extract the first string from a Value (string or array)
+                let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
+                    match v {
+                        Some(serde_json::Value::String(s)) => Some(s.clone()),
+                        Some(serde_json::Value::Array(arr)) => arr
+                            .get(0)
+                            .and_then(|first| first.as_str())
+                            .map(String::from),
+                        _ => None,
+                    }
+                };
+
+                // Helper function to extract a string array from a Value (string or array)
+                let get_string_array = |v: &Option<serde_json::Value>| -> Vec<String> {
+                    match v {
+                        Some(serde_json::Value::String(s)) => vec![s.clone()], // Single string becomes a vec
+                        Some(serde_json::Value::Array(arr)) => arr
+                            .iter()
+                            .filter_map(|val| val.as_str().map(String::from))
+                            .collect(),
+                        _ => Vec::new(), // Otherwise, return empty vec
+                    }
+                };
+
+
+                // Process into our ItemDetails struct
+                // Handle Option<MetadataDetails> explicitly instead of unwrap_or_default
+                let (title, creator, description, date, uploader, collections) =
+                    if let Some(metadata) = &raw_details.metadata {
+                         (
+                            get_first_string(&metadata.title),
+                            get_first_string(&metadata.creator),
+                            get_first_string(&metadata.description),
+                            metadata.date.clone(), // Clone the Option<String>
+                            metadata.uploader.clone(), // Clone the Option<String>
+                            get_string_array(&metadata.collection), // Use helper for collection
+                        )
+                    } else {
+                        // If metadata object is missing entirely, return None/empty values
+                        (None, None, None, None, None, Vec::new())
+                    };
+
+                let download_base_url = match (raw_details.server, raw_details.dir) {
+                    (Some(server), Some(dir)) => Some(format!("https://{}/{}", server, dir)),
+                    _ => None, // Add default case
+                }; // Add closing semicolon
+
+                // Ensure the identifier in the returned struct matches the one requested.
+                // Use the variables extracted earlier.
+                let details = ItemDetails {
+                    identifier: identifier.to_string(), // Use the function argument identifier
+                    title,                              // Use processed value
+                    creator,                            // Use processed value
+                    description,                        // Use processed value
+                    date,                               // Use processed value
+                    uploader,                           // Use processed value
+                    collections,                        // Use processed value
+                    files: match raw_details.files {
+                        // Handle the case where 'files' is a JSON Array
+                        Some(serde_json::Value::Array(files_array)) => {
+                            files_array
+                                .into_iter()
+                                .filter_map(|value| {
+                                    // Attempt to deserialize each element in the array into FileDetailsInternal
+                                    // We also need the 'name' field from within the object now.
+                                    #[derive(Deserialize)]
+                                    struct FileWithName {
+                                        name: String,
+                                        #[serde(flatten)]
+                                        details: FileDetailsInternal,
+                                    }
+
+                                    match serde_json::from_value::<FileWithName>(value) {
+                                        Ok(file_with_name) => Some(FileDetails {
+                                            name: file_with_name.name, // Get name from the parsed struct
+                                            source: file_with_name.details.source,
+                                            format: file_with_name.details.format,
+                                            size: file_with_name.details.size,
+                                            md5: file_with_name.details.md5,
+                                        }),
+                                        Err(_) => None, // Skip files that don't match the expected structure
+                                    }
+                                })
+                                .collect()
+                        }
+                        // Handle the (less likely?) case where 'files' is a JSON object (Map)
+                        Some(serde_json::Value::Object(files_map)) => {
+                             files_map
+                                .into_iter()
+                                .filter_map(|(name, value)| {
+                                    // Attempt to deserialize each value in the map into FileDetailsInternal
+                                    match serde_json::from_value::<FileDetailsInternal>(value) {
+                                        Ok(internal_details) => Some(FileDetails {
+                                            // Use the map key as the name
+                                            name: name.strip_prefix('/').unwrap_or(&name).to_string(),
+                                            source: internal_details.source,
+                                            format: internal_details.format,
+                                            size: internal_details.size,
+                                            md5: internal_details.md5,
+                                        }),
+                                        Err(_) => None, // Skip files that don't match the expected structure
+                                    }
+                                })
+                                .collect()
+                        }
+                        // If 'files' is None, Null, or some other unexpected type, return empty vec
+                        _ => Vec::new(),
+                    },
+                    download_base_url,
+                };
+
+                info!("Successfully processed item details for identifier: {}", identifier);
+                return Ok(details); // Success, return the processed details
+                // --- End of existing processing logic ---
+            }
+            Err(e) => {
+                // Error sending the request (network issue, timeout, etc.)
+                let current_err = anyhow!(e).context(format!(
+                    "Failed to send item details request for '{}' (Attempt {}/{})",
+                    identifier, attempt, max_retries
+                ));
+                error!("{}", current_err); // Log the specific error for this attempt
+                last_error = Some(current_err);
+
+                if attempt < max_retries {
+                    // Wait before retrying (e.g., exponential backoff)
+                    let delay_secs = 1 << (attempt - 1); // 1s, 2s
+                    warn!("Retrying in {} seconds...", delay_secs);
+                    sleep(TokioDuration::from_secs(delay_secs)).await;
+                }
+            }
+        }
     }
 
-    let raw_details = response
-        .json::<ItemMetadataResponse>()
-        .await
-        .context(format!("Failed to parse JSON response for item details '{}'", identifier))?;
-
-    // Helper function to extract the first string from a Value (string or array)
-    let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
-        match v {
-            Some(serde_json::Value::String(s)) => Some(s.clone()),
-            Some(serde_json::Value::Array(arr)) => arr
-                .get(0)
-                .and_then(|first| first.as_str())
-                .map(String::from),
-            _ => None,
-        }
-    };
-
-    // Helper function to extract a string array from a Value (string or array)
-    let get_string_array = |v: &Option<serde_json::Value>| -> Vec<String> {
-        match v {
-            Some(serde_json::Value::String(s)) => vec![s.clone()], // Single string becomes a vec
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|val| val.as_str().map(String::from))
-                .collect(),
-            _ => Vec::new(), // Otherwise, return empty vec
-        }
-    };
-
-
-    // Process into our ItemDetails struct
-    // Handle Option<MetadataDetails> explicitly instead of unwrap_or_default
-    let (title, creator, description, date, uploader, collections) =
-        if let Some(metadata) = &raw_details.metadata {
-             (
-                get_first_string(&metadata.title),
-                get_first_string(&metadata.creator),
-                get_first_string(&metadata.description),
-                metadata.date.clone(), // Clone the Option<String>
-                metadata.uploader.clone(), // Clone the Option<String>
-                get_string_array(&metadata.collection), // Use helper for collection
-            )
-        } else {
-            // If metadata object is missing entirely, return None/empty values
-            (None, None, None, None, None, Vec::new())
-        };
-
-    let download_base_url = match (raw_details.server, raw_details.dir) {
-        (Some(server), Some(dir)) => Some(format!("https://{}/{}", server, dir)),
-        _ => None, // Add default case
-    }; // Add closing semicolon
-
-    // Ensure the identifier in the returned struct matches the one requested.
-    // Use the variables extracted earlier.
-    let details = ItemDetails {
-        identifier: identifier.to_string(), // Use the function argument identifier
-        title,                              // Use processed value
-        creator,                            // Use processed value
-        description,                        // Use processed value
-        date,                               // Use processed value
-        uploader,                           // Use processed value
-        collections,                        // Use processed value
-        files: match raw_details.files {
-            // Handle the case where 'files' is a JSON Array
-            Some(serde_json::Value::Array(files_array)) => {
-                files_array
-                    .into_iter()
-                    .filter_map(|value| {
-                        // Attempt to deserialize each element in the array into FileDetailsInternal
-                        // We also need the 'name' field from within the object now.
-                        #[derive(Deserialize)]
-                        struct FileWithName {
-                            name: String,
-                            #[serde(flatten)]
-                            details: FileDetailsInternal,
-                        }
-
-                        match serde_json::from_value::<FileWithName>(value) {
-                            Ok(file_with_name) => Some(FileDetails {
-                                name: file_with_name.name, // Get name from the parsed struct
-                                source: file_with_name.details.source,
-                                format: file_with_name.details.format,
-                                size: file_with_name.details.size,
-                                md5: file_with_name.details.md5,
-                            }),
-                            Err(_) => None, // Skip files that don't match the expected structure
-                        }
-                    })
-                    .collect()
-            }
-            // Handle the (less likely?) case where 'files' is a JSON object (Map)
-            Some(serde_json::Value::Object(files_map)) => {
-                 files_map
-                    .into_iter()
-                    .filter_map(|(name, value)| {
-                        // Attempt to deserialize each value in the map into FileDetailsInternal
-                        match serde_json::from_value::<FileDetailsInternal>(value) {
-                            Ok(internal_details) => Some(FileDetails {
-                                // Use the map key as the name
-                                name: name.strip_prefix('/').unwrap_or(&name).to_string(),
-                                source: internal_details.source,
-                                format: internal_details.format,
-                                size: internal_details.size,
-                                md5: internal_details.md5,
-                            }),
-                            Err(_) => None, // Skip files that don't match the expected structure
-                        }
-                    })
-                    .collect()
-            }
-            // If 'files' is None, Null, or some other unexpected type, return empty vec
-            _ => Vec::new(),
-        },
-        download_base_url,
-    };
-
-    info!("Successfully processed item details for identifier: {}", identifier);
-    Ok(details)
+    // If all retries failed, return the last error encountered
+    Err(last_error.unwrap_or_else(|| anyhow!("Item details request failed after {} attempts for '{}'", max_retries, identifier)))
 }
 
 
 /// Fetches ALL item identifiers for a given collection using pagination.
 pub async fn fetch_all_collection_identifiers(
+        // Log error but continue, as sometimes non-existent items return non-success but valid (empty) JSON
+        error!(
+            "Metadata API request for '{}' returned non-success status: {}",
+            identifier,
+            status
     client: &Client,
     collection_name: &str,
 ) -> Result<Vec<String>> {

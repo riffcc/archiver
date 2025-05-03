@@ -156,10 +156,10 @@ pub enum DownloadProgress {
 impl App {
     /// Constructs a new instance of [`App`].
     pub fn new() -> Self {
-        // Configure Reqwest client with timeouts
+        // Configure Reqwest client with increased timeouts
         let client = Client::builder()
-            .timeout(Duration::from_secs(30)) // General request timeout
-            .connect_timeout(Duration::from_secs(30)) // Connection timeout
+            .timeout(Duration::from_secs(60)) // General request timeout (increased to 60s)
+            .connect_timeout(Duration::from_secs(60)) // Connection timeout (increased to 60s)
             .build()
             .unwrap_or_else(|_| Client::new()); // Fallback to default if builder fails
 
