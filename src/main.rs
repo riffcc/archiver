@@ -360,9 +360,10 @@ async fn main() -> Result<()> {
 // Removed redundant imports: use std::path::Path; and use tokio::fs::{self, File};
 // The necessary items (std::path::Path, tokio::fs::File) are imported at the top.
 // We still need `tokio::fs` itself for functions like `metadata` and `create_dir_all`.
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::fs::{self, File as TokioFile}; // Alias tokio::fs::File to avoid clash with std::fs::File
+use tokio::io::{AsyncReadExt, AsyncWriteExt}; // Add AsyncReadExt for reading cache file
 use futures_util::StreamExt;
+use serde_json; // Add serde_json for caching
 // Removed redundant log macro import: use log::{debug, error, info, warn};
 // Macros are already imported at the top of the file.
 
@@ -717,24 +718,105 @@ async fn download_collection(
     rate_limiter: AppRateLimiter, // Use the type alias
 ) -> Result<()> {
     info!("Starting download_collection for '{}', mode: {:?}", collection_id, mode);
-    let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers for: {}", collection_id))).await;
 
-    // --- Fetch ALL identifiers for the specified collection (pass limiter) ---
-    let limiter_clone_ids = Arc::clone(&rate_limiter);
-    let all_identifiers = match archive_api::fetch_all_collection_identifiers(client, collection_id, limiter_clone_ids).await {
-        Ok(ids) => ids,
-        Err(e) => {
-            error!("Failed to fetch identifiers for collection '{}': {}", collection_id, e);
-            let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to get identifiers for {}: {}", collection_id, e))).await;
-            // Send CollectionCompleted with 0/0 since we couldn't even start
-            let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
-            return Err(e).context(format!("Failed fetching identifiers for collection '{}'", collection_id));
+    // --- Identifier Caching Logic ---
+    let cache_file_name = format!("{}.identifiers.json", collection_id);
+    let cache_path = Path::new(base_dir).join(&cache_file_name);
+    let mut all_identifiers: Vec<String> = Vec::new();
+    let mut use_cache = false;
+
+    // 1. Check if cache file exists
+    if cache_path.exists() {
+        info!("Found identifier cache file: {}", cache_path.display());
+        let _ = progress_tx.send(DownloadProgress::Status(format!("Loading identifiers from cache: {}", cache_file_name))).await;
+        match TokioFile::open(&cache_path).await {
+            Ok(mut file) => {
+                let mut contents = String::new();
+                if file.read_to_string(&mut contents).await.is_ok() {
+                    match serde_json::from_str::<Vec<String>>(&contents) {
+                        Ok(cached_ids) => {
+                            if !cached_ids.is_empty() {
+                                info!("Successfully loaded {} identifiers from cache: {}", cached_ids.len(), cache_path.display());
+                                all_identifiers = cached_ids;
+                                use_cache = true;
+                            } else {
+                                warn!("Cache file is empty or invalid: {}. Re-fetching.", cache_path.display());
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse cache file JSON '{}': {}. Re-fetching.", cache_path.display(), e);
+                            // Attempt to delete the invalid cache file? Or just overwrite later.
+                            let _ = fs::remove_file(&cache_path).await; // Try removing invalid cache
+                        }
+                    }
+                } else {
+                    warn!("Failed to read cache file '{}'. Re-fetching.", cache_path.display());
+                }
+            }
+            Err(e) => {
+                warn!("Failed to open cache file '{}': {}. Re-fetching.", cache_path.display(), e);
+            }
         }
-    };
-    // ---
+    }
+
+    // 2. Fetch from API if cache wasn't used
+    if !use_cache {
+        info!("Fetching identifiers from API for collection: {}", collection_id);
+        let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers from API: {}", collection_id))).await;
+        let limiter_clone_ids = Arc::clone(&rate_limiter);
+        match archive_api::fetch_all_collection_identifiers(client, collection_id, limiter_clone_ids).await {
+            Ok(ids) => {
+                all_identifiers = ids;
+                // 3. Save fetched identifiers to cache
+                if !all_identifiers.is_empty() {
+                    match serde_json::to_string_pretty(&all_identifiers) {
+                        Ok(json_data) => {
+                            // Ensure parent directory exists (should already from download setup, but good practice)
+                            if let Some(parent) = cache_path.parent() {
+                                if let Err(e) = fs::create_dir_all(parent).await {
+                                     warn!("Failed to ensure cache directory exists '{}': {}", parent.display(), e);
+                                     // Proceed without saving cache if dir creation fails
+                                } else {
+                                    // Write to cache file
+                                    match TokioFile::create(&cache_path).await {
+                                        Ok(mut file) => {
+                                            if let Err(e) = file.write_all(json_data.as_bytes()).await {
+                                                warn!("Failed to write to cache file '{}': {}", cache_path.display(), e);
+                                            } else {
+                                                info!("Successfully saved {} identifiers to cache: {}", all_identifiers.len(), cache_path.display());
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("Failed to create cache file '{}': {}", cache_path.display(), e);
+                                        }
+                                    }
+                                }
+                            } else {
+                                warn!("Could not determine parent directory for cache file: {}", cache_path.display());
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to serialize identifiers to JSON for caching: {}", e);
+                        }
+                    }
+                } else {
+                     info!("No identifiers fetched from API, cache file not created/updated.");
+                }
+            }
+            Err(e) => {
+                error!("Failed to fetch identifiers for collection '{}': {}", collection_id, e);
+                let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to get identifiers for {}: {}", collection_id, e))).await;
+                // Send CollectionCompleted with 0/0 since we couldn't even start
+                let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
+                return Err(e).context(format!("Failed fetching identifiers for collection '{}'", collection_id));
+            }
+        };
+    }
+    // --- End Identifier Caching Logic ---
+
 
     if all_identifiers.is_empty() {
-        info!("No items found in collection: {}. Download complete.", collection_id);
+        info!("No items found in collection (or cache): {}. Download complete.", collection_id);
         let _ = progress_tx.send(DownloadProgress::Status(format!("No items found in collection: {}", collection_id))).await;
         let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
         return Ok(());

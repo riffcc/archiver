@@ -121,10 +121,113 @@ pub async fn fetch_collection_items(
 ) -> Result<(Vec<ArchiveDoc>, usize)> {
     info!("Fetching collection items for '{}', page {}, rows {}", collection_name, page, rows);
     let query = format!("collection:{}", collection_name);
-    // let start = (page - 1) * rows; // API uses 0-based start index
+    let max_retries = 3;
+    let mut last_error: Option<anyhow::Error> = None;
 
-    let request_builder = client
-        .get(ADVANCED_SEARCH_URL)
+    for attempt in 1..=max_retries {
+        debug!("Attempting to fetch collection items for '{}', page {}, attempt {}/{}", collection_name, page, attempt, max_retries);
+
+        // --- Wait for Rate Limiter (inside retry loop) ---
+        debug!("Waiting for rate limit permit for collection items: {} (page {})", collection_name, page);
+        rate_limiter.until_ready().await;
+        debug!("Acquired rate limit permit for collection items: {} (page {})", collection_name, page);
+        // --- Rate Limit Permit Acquired ---
+
+        // Clone the request builder inside the loop for retries
+        let request_builder = client
+            .get(ADVANCED_SEARCH_URL)
+            .query(&[
+                ("q", query.as_str()),
+                ("fl[]", "identifier"), // Request only the identifier field for the list
+                // Add other fields to fl[] if needed later, e.g., "title"
+                ("rows", &rows.to_string()),
+                ("page", &page.to_string()), // Note: API might use 'start' instead of 'page' depending on endpoint version/preference
+                ("output", "json"),
+            ]);
+
+        debug!("Sending collection items request: {:?}", request_builder);
+
+        match request_builder.try_clone() { // Need to clone the builder for potential retries
+            Some(cloned_builder) => {
+                match cloned_builder.send().await {
+                    Ok(response) => {
+                        if response.status().is_success() {
+                            // Success path
+                            match response.json::<ArchiveSearchResponse>().await {
+                                Ok(search_result) => {
+                                    info!("Successfully fetched {} items (total found: {}) for collection '{}', page {}",
+                                          search_result.response.docs.len(), search_result.response.num_found, collection_name, page);
+                                    return Ok((search_result.response.docs, search_result.response.num_found));
+                                }
+                                Err(e) => {
+                                    let parse_err = anyhow!(e).context(format!(
+                                        "Failed to parse JSON for collection items '{}', page {} (Attempt {}/{})",
+                                        collection_name, page, attempt, max_retries
+                                    ));
+                                    error!("{}", parse_err);
+                                    last_error = Some(parse_err);
+                                    // Don't retry on parse errors
+                                    break;
+                                }
+                            }
+                        } else {
+                            // Handle non-success HTTP status
+                            let status = response.status();
+                            let err_msg = format!(
+                                "Collection items API request failed for '{}', page {} with status: {} (Attempt {}/{})",
+                                collection_name, page, status, attempt, max_retries
+                            );
+                            error!("{}", err_msg);
+                            last_error = Some(anyhow!(err_msg));
+
+                            // Retry only on server errors (5xx) or specific transient errors if needed
+                            if status.is_server_error() && attempt < max_retries {
+                                let delay_secs = 1 << (attempt - 1); // 1s, 2s
+                                warn!("Retrying collection items fetch in {} seconds...", delay_secs);
+                                sleep(TokioDuration::from_secs(delay_secs)).await;
+                                continue; // Go to next attempt
+                            } else {
+                                // Don't retry for client errors (4xx) or after max retries
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Handle request sending errors (network, timeout, etc.)
+                        let current_err = anyhow!(e).context(format!(
+                            "Failed to send collection items request for '{}', page {} (Attempt {}/{})",
+                            collection_name, page, attempt, max_retries
+                        ));
+                        error!("{}", current_err);
+                        last_error = Some(current_err);
+
+                        if attempt < max_retries {
+                            let delay_secs = 1 << (attempt - 1); // 1s, 2s
+                            warn!("Retrying collection items fetch in {} seconds...", delay_secs);
+                            sleep(TokioDuration::from_secs(delay_secs)).await;
+                            continue; // Go to next attempt
+                        } else {
+                            break; // Max retries reached
+                        }
+                    }
+                }
+            }
+            None => {
+                // Should not happen with standard reqwest builders
+                let build_err = anyhow!("Failed to clone request builder for collection items '{}', page {}", collection_name, page);
+                error!("{}", build_err);
+                last_error = Some(build_err);
+                break; // Cannot retry if builder cannot be cloned
+            }
+        }
+    } // End retry loop
+
+    // If loop finished without returning Ok, return the last error
+    Err(last_error.unwrap_or_else(|| anyhow!("Collection items request failed after {} attempts for '{}', page {}", max_retries, collection_name, page)))
+}
+
+
+/// Fetches detailed metadata and file list for a given item identifier, with retries.
         .query(&[
             ("q", query.as_str()),
             ("fl[]", "identifier"), // Request only the identifier field for the list
