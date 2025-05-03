@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn}; // Import log macros (removed LevelFilter)
 use rust_tui_app::{
     app::{App, DownloadAction, DownloadProgress, UpdateAction},
-    archive_api::{self, ArchiveDoc, FileDetails, ItemDetails}, // Added FileDetails back
+    archive_api::{self, ArchiveDoc, ItemDetails}, // Removed unused FileDetails import
     event::{Event, EventHandler},
     settings::{self, DownloadMode}, // Import DownloadMode
     tui::Tui,
