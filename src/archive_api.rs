@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result}; // Removed Context
 use log::{debug, error, info, warn}; // Import log macros
 use reqwest::{Client, StatusCode}; // Import StatusCode
-use serde::Deserialize;
+use serde::{Deserialize, Serialize}; // Added Serialize
 use std::{collections::HashMap, sync::Arc};
 use tokio::{sync::mpsc, time::{sleep, Duration as TokioDuration}}; // Import mpsc, sleep and Tokio Duration for retries
 use crate::app::AppRateLimiter; // Use the type alias from app.rs
@@ -23,7 +23,7 @@ struct ResponseContent {
     docs: Vec<ArchiveDoc>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)] // Added Serialize
 pub struct ArchiveDoc {
     pub identifier: String,
     // Add other fields you might need, e.g., title, description
@@ -509,10 +509,6 @@ pub async fn fetch_all_collection_items_incremental(
         // Clone limiter for each page fetch
         let limiter_clone = Arc::clone(&rate_limiter);
         let fetch_result = fetch_collection_items(
-           client,
-           collection_name,
-           ROWS_PER_PAGE,
-           current_page,
             client,
             collection_name,
             ROWS_PER_PAGE,

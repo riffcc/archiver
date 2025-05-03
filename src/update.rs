@@ -582,7 +582,8 @@ mod tests {
         let action = update(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(action.is_some());
-        assert!(matches!(action, Some(UpdateAction::FetchCollectionItems(ref name)) if name == "coll2"));
+        // Use the correct action variant StartIncrementalItemFetch
+        assert!(matches!(action, Some(UpdateAction::StartIncrementalItemFetch(ref name)) if name == "coll2"));
         assert_eq!(app.current_collection_name, Some("coll2".to_string()));
         assert!(app.items.is_empty()); // Items cleared
         assert!(app.item_list_state.selected().is_none()); // Item selection reset
