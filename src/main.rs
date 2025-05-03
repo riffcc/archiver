@@ -8,8 +8,7 @@ use rust_tui_app::{
     settings::{self, DownloadMode},
     tui::Tui,
     update::update,
-}; // Added missing closing brace
-};
+}; // Removed extra closing brace
 use ratatui::{backend::CrosstermBackend, Terminal};
 // Use SystemClock here to match the AppRateLimiter definition
 use governor::{Quota, RateLimiter, clock::SystemClock, state::direct::NotKeyed};
