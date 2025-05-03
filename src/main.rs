@@ -912,13 +912,13 @@ async fn download_collection(
                             warn!("Failed to serialize identifiers to JSON for caching: {}", e);
                         }
                     }
+                } // End of if !all_identifiers.is_empty()
+                else { // Add the else block here
+                    info!("No identifiers fetched from API, cache file not created/updated.");
                 }
-            } else {
-                 info!("No identifiers fetched from API, cache file not created/updated.");
-            }
-        } // End of fetch_error check block
-    }
-    // --- End Identifier Caching Logic ---
+            } // End of else block (fetch_error is None)
+        } // End of if !use_cache block
+    } // --- End Identifier Caching Logic ---
 
 
     if all_identifiers.is_empty() {
