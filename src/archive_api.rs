@@ -442,9 +442,10 @@ pub async fn fetch_item_details(
         }
         Err(e) => {
             // Error sending the request (network issue, timeout, etc.)
-            let err = anyhow!(e).context("Failed to send item details request");
+            // Borrow 'e' here instead of moving it
+            let err = anyhow!(&e).context("Failed to send item details request");
             error!("{} for identifier '{}'", err, identifier);
-            // Classify network errors
+            // Classify network errors using the original 'e'
             let kind = if e.is_timeout() {
                 FetchDetailsErrorKind::NetworkError // Specifically timeout
             } else if e.is_connect() || e.is_request() {
