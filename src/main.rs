@@ -918,7 +918,7 @@ async fn download_collection(
                 }
             } // End of else block (fetch_error is None)
         } // End of if !use_cache block
-    } // --- End Identifier Caching Logic ---
+    // --- End Identifier Caching Logic --- // Removed extra brace before this comment
 
 
     if all_identifiers.is_empty() {
