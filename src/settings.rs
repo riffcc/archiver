@@ -1,15 +1,37 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{fmt, fs, path::PathBuf}; // Add fmt
 
 const QUALIFIER: &str = "com";
 const ORGANIZATION: &str = "riffcc"; // Updated organization
 pub const APPLICATION: &str = "archiver"; // Updated application name
 
+/// Defines the download strategy.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Copy)] // Added Eq, Copy
+pub enum DownloadMode {
+    /// Download all files directly.
+    Direct,
+    /// Download only the .torrent file.
+    TorrentOnly,
+}
+
+// Implement Display for showing the mode in the UI
+impl fmt::Display for DownloadMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DownloadMode::Direct => write!(f, "Direct (All Files)"),
+            DownloadMode::TorrentOnly => write!(f, "Torrent Only (.torrent)"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)] // Added PartialEq
 pub struct Settings {
     pub download_directory: Option<String>,
+    /// Download mode (Direct or TorrentOnly).
+    #[serde(default = "default_download_mode")]
+    pub download_mode: DownloadMode,
     /// Max concurrent file downloads *within* a single item/collection download task.
     pub max_concurrent_downloads: Option<usize>,
     /// List of saved collection identifiers.
@@ -24,11 +46,17 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             download_directory: None,
+            download_mode: default_download_mode(),
             max_concurrent_downloads: Some(4), // Default to 4 concurrent file downloads
             favorite_collections: Vec::new(),  // Default to empty list
             max_concurrent_collections: Some(1), // Default to downloading 1 collection at a time
         }
     }
+}
+
+// Helper function for serde default
+fn default_download_mode() -> DownloadMode {
+    DownloadMode::Direct // Default download mode
 }
 
 
@@ -120,6 +148,7 @@ mod tests {
         // Load from the specific (non-existent) path
         let settings = load_settings_from_path(&config_path).unwrap();
         assert_eq!(settings.download_directory, None);
+        assert_eq!(settings.download_mode, DownloadMode::Direct); // Check default mode
         assert_eq!(settings, Settings::default()); // Ensure all defaults match
     }
 
@@ -129,6 +158,7 @@ mod tests {
 
         let mut settings_to_save = Settings::default();
         settings_to_save.download_directory = Some("/tmp/downloads".to_string());
+        settings_to_save.download_mode = DownloadMode::TorrentOnly; // Test non-default mode
         settings_to_save.max_concurrent_downloads = Some(10);
         settings_to_save.favorite_collections = vec!["test_coll".to_string()];
 
@@ -139,6 +169,7 @@ mod tests {
         // Load from the specific path
         let loaded_settings = load_settings_from_path(&config_path).unwrap();
         assert_eq!(loaded_settings.download_directory, Some("/tmp/downloads".to_string()));
+        assert_eq!(loaded_settings.download_mode, DownloadMode::TorrentOnly); // Verify loaded mode
         assert_eq!(loaded_settings.max_concurrent_downloads, Some(10));
         assert_eq!(loaded_settings.favorite_collections, vec!["test_coll".to_string()]);
     }

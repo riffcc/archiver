@@ -2,9 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn}; // Import log macros (removed LevelFilter)
 use rust_tui_app::{
     app::{App, DownloadAction, DownloadProgress, UpdateAction},
-    archive_api::{self, ArchiveDoc, ItemDetails}, // Removed FileDetails
+    archive_api::{self, ArchiveDoc, FileDetails, ItemDetails}, // Added FileDetails back
     event::{Event, EventHandler},
-    settings, // Removed self, Settings
+    settings::{self, DownloadMode}, // Import DownloadMode
     tui::Tui,
     update::update,
 };
@@ -159,21 +159,23 @@ async fn main() -> Result<()> {
                                         let base_dir_clone = base_dir.clone();
                                         let progress_tx_clone = download_progress_tx.clone();
                                         let semaphore_clone = Arc::clone(&semaphore); // File download semaphore
+                                        let download_mode = app.settings.download_mode; // Get current download mode
 
                                         // Spawn the download task
                                         tokio::spawn(async move {
                                             let result = match download_action {
                                                 DownloadAction::ItemAllFiles(item_id) => {
-                                                    // Pass semaphore down, no collection context for single item download
-                                                    download_item(&client_clone, &base_dir_clone, None, &item_id, progress_tx_clone.clone(), semaphore_clone).await
+                                                    // Pass semaphore AND mode down, no collection context for single item download
+                                                    download_item(&client_clone, &base_dir_clone, None, &item_id, download_mode, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::File(item_id, file) => {
                                                     // Pass semaphore down, no collection context for single file download
+                                                    // Mode doesn't apply here, always download the specific file
                                                     download_single_file(&client_clone, &base_dir_clone, None, &item_id, &file, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::Collection(collection_id) => {
-                                                     // Pass semaphore down, collection context is provided by download_collection itself
-                                                     download_collection(&client_clone, &base_dir_clone, &collection_id, progress_tx_clone.clone(), semaphore_clone).await
+                                                     // Pass semaphore AND mode down, collection context is provided by download_collection itself
+                                                     download_collection(&client_clone, &base_dir_clone, &collection_id, download_mode, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                             };
 
@@ -481,11 +483,12 @@ async fn download_item(
     base_dir: &str,
     collection_id: Option<&str>, // Added: Optional collection context
     item_id: &str,
+    mode: DownloadMode, // Added: Download mode
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>,
 ) -> Result<()> {
     let collection_str = collection_id.unwrap_or("<none>");
-    info!("Starting download_item: collection='{}', item='{}'", collection_str, item_id);
+    info!("Starting download_item: collection='{}', item='{}', mode='{:?}'", collection_str, item_id, mode);
     let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
 
     // Fetch item details first to get the file list
@@ -511,7 +514,81 @@ async fn download_item(
          return Ok(());
      }
 
-     info!("Queueing {} files for item: {}", total_files, item_id);
+     // --- Mode-Specific Logic ---
+     if mode == DownloadMode::TorrentOnly {
+         // Find the .torrent file
+         let torrent_file = details.files.iter().find(|f| f.name.ends_with(".torrent"));
+
+         if let Some(torrent) = torrent_file {
+             info!("TorrentOnly mode: Found torrent file '{}' for item '{}'", torrent.name, item_id);
+             let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing torrent file for item: {}", item_id))).await;
+             let _ = progress_tx.send(DownloadProgress::ItemFileCount(1)).await; // Only 1 file to download
+
+             // Create directory: base_dir / [collection_id] / item_id
+             let item_dir = match collection_id {
+                Some(c) => Path::new(base_dir).join(c).join(item_id),
+                None => Path::new(base_dir).join(item_id),
+             };
+             debug!("Ensuring item directory exists: {}", item_dir.display());
+             fs::create_dir_all(&item_dir).await.context(format!("Failed to create item directory '{}'", item_dir.display()))?;
+
+             // Spawn a single task to download the torrent file
+             let client_clone = client.clone();
+             let base_dir_clone = base_dir.to_string();
+             let item_id_clone = item_id.to_string();
+             let progress_tx_clone = progress_tx.clone();
+             let semaphore_clone = Arc::clone(&semaphore);
+             let torrent_clone = torrent.clone(); // Clone the FileDetails
+             let collection_id_task_clone = collection_id.map(|s| s.to_string());
+
+             let handle = tokio::spawn(async move {
+                 download_single_file(
+                     &client_clone,
+                     &base_dir_clone,
+                     collection_id_task_clone.as_deref(),
+                     &item_id_clone,
+                     &torrent_clone, // Pass the torrent file details
+                     progress_tx_clone,
+                     semaphore_clone,
+                 )
+                 .await
+             });
+
+             // Wait for the single torrent download task
+             let torrent_result = handle.await;
+             let item_success = match torrent_result {
+                 Ok(Ok(_)) => {
+                     debug!("Torrent download task completed successfully for item '{}'.", item_id);
+                     true
+                 }
+                 Ok(Err(e)) => {
+                     error!("Torrent download task failed within item {}: {}", item_id, e);
+                     false
+                 }
+                 Err(e) => { // Task panicked
+                     error!("Torrent download task panicked for item {}: {}", item_id, e);
+                     let _ = progress_tx.send(DownloadProgress::Error(format!("Torrent download task panicked for item {}: {}", item_id, e))).await;
+                     false
+                 }
+             };
+
+             info!("Finished processing item '{}' (TorrentOnly mode). Success: {}", item_id, item_success);
+             let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), item_success)).await;
+             return Ok(()); // Finished processing this item in TorrentOnly mode
+
+         } else {
+             // Torrent file not found
+             warn!("TorrentOnly mode: No .torrent file found for item '{}'. Skipping.", item_id);
+             let _ = progress_tx.send(DownloadProgress::Status(format!("No .torrent file found for item: {}", item_id))).await;
+             let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), false)).await; // Mark as failed (no torrent)
+             // Return Ok because the *item processing* didn't fail, just couldn't find the torrent
+             return Ok(());
+         }
+     }
+     // --- End Mode-Specific Logic (Direct mode continues below) ---
+
+
+     info!("Direct mode: Queueing {} files for item: {}", total_files, item_id);
      let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} files for item: {}", total_files, item_id))).await;
 
      // Create directory: base_dir / [collection_id] / item_id
@@ -577,7 +654,7 @@ async fn download_item(
 
      // Send item completion status based on whether any file task failed
      let success_status = !item_failed;
-     info!("Finished processing item '{}'. Success: {}", item_id, success_status);
+     info!("Finished processing item '{}' (Direct mode). Success: {}", item_id, success_status);
      let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), success_status)).await;
 
      // Return Ok even if some files failed, ItemCompleted indicates success/failure of the item overall
@@ -589,10 +666,11 @@ async fn download_collection(
     client: &Client,
     base_dir: &str,
     collection_id: &str, // Now takes specific collection ID
+    mode: DownloadMode, // Added: Download mode
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>, // File download semaphore
 ) -> Result<()> {
-    info!("Starting download_collection for '{}'", collection_id);
+    info!("Starting download_collection for '{}', mode: {:?}", collection_id, mode);
     let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers for: {}", collection_id))).await;
 
     // --- Fetch ALL identifiers for the specified collection ---
@@ -635,13 +713,14 @@ async fn download_collection(
         let collection_id_clone = collection_id.to_string(); // Clone collection ID for task
 
         let handle = tokio::spawn(async move {
-            // download_item handles fetching details and spawning file downloads
+            // download_item handles fetching details and spawning file downloads based on mode
             // It uses the semaphore passed down for individual file permits
             let item_result = download_item(
                 &client_clone,
                 &base_dir_clone,
                 Some(&collection_id_clone), // Pass collection ID context (now cloned)
                 &item_id_clone,
+                mode, // Pass the download mode down
                 progress_tx_clone.clone(),
                 semaphore_clone, // Pass file semaphore
             )

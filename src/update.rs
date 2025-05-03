@@ -304,9 +304,11 @@ fn handle_viewing_item_input(app: &mut App, key_event: KeyEvent) {
 }
 
 
+use crate::settings::DownloadMode; // Import the new enum
+
 /// Handles input when viewing/editing settings.
 fn handle_settings_view_input(app: &mut App, key_event: KeyEvent) {
-    let num_settings = 3; // Download Dir, File Concurrency, Collection Concurrency
+    let num_settings = 4; // Download Dir, Download Mode, File Concurrency, Collection Concurrency
     match key_event.code {
         KeyCode::Esc => {
             // Exit settings view, save, return to browsing
@@ -326,30 +328,33 @@ fn handle_settings_view_input(app: &mut App, key_event: KeyEvent) {
             };
             app.settings_list_state.select(Some(app.selected_setting_index));
         }
-        KeyCode::Right => {
+        KeyCode::Right | KeyCode::Left => { // Use Left/Right to cycle/adjust
             match app.selected_setting_index {
-                1 => { // File Concurrency
+                1 => { // Download Mode (Cycle)
+                    app.settings.download_mode = match app.settings.download_mode {
+                        DownloadMode::Direct => DownloadMode::TorrentOnly,
+                        DownloadMode::TorrentOnly => DownloadMode::Direct,
+                    };
+                }
+                2 => { // File Concurrency (Adjust)
                     let current = app.settings.max_concurrent_downloads.unwrap_or(1);
-                    app.settings.max_concurrent_downloads = Some(current.saturating_add(1));
+                    let new_val = if key_event.code == KeyCode::Right {
+                        current.saturating_add(1)
+                    } else {
+                        current.saturating_sub(1).max(1) // Min 1
+                    };
+                    app.settings.max_concurrent_downloads = Some(new_val);
                 }
-                2 => { // Collection Concurrency
+                3 => { // Collection Concurrency (Adjust)
                     let current = app.settings.max_concurrent_collections.unwrap_or(1);
-                    app.settings.max_concurrent_collections = Some(current.saturating_add(1));
+                     let new_val = if key_event.code == KeyCode::Right {
+                        current.saturating_add(1)
+                    } else {
+                        current.saturating_sub(1).max(1) // Min 1
+                    };
+                    app.settings.max_concurrent_collections = Some(new_val);
                 }
-                _ => {} // No action for Download Dir
-            }
-        }
-        KeyCode::Left => {
-             match app.selected_setting_index {
-                1 => { // File Concurrency
-                    let current = app.settings.max_concurrent_downloads.unwrap_or(1);
-                    app.settings.max_concurrent_downloads = Some(current.saturating_sub(1).max(1)); // Min 1
-                }
-                2 => { // Collection Concurrency
-                    let current = app.settings.max_concurrent_collections.unwrap_or(1);
-                    app.settings.max_concurrent_collections = Some(current.saturating_sub(1).max(1)); // Min 1
-                }
-                _ => {} // No action for Download Dir
+                _ => {} // No Left/Right action for Download Dir (index 0)
             }
         }
         KeyCode::Enter => {
@@ -663,19 +668,35 @@ mod tests {
         assert!(app.add_collection_input.is_empty()); // Input cleared
     }
 
+    use crate::settings::DownloadMode; // Import for test
+
     #[test]
     fn test_update_settings_navigation_and_adjustment() {
         let mut app = setup_test_app();
         app.current_state = AppState::SettingsView;
         app.selected_setting_index = 0; // Start at Download Dir
         app.settings_list_state.select(Some(0));
+        app.settings.download_mode = DownloadMode::Direct; // Start with Direct
         app.settings.max_concurrent_downloads = Some(4);
         app.settings.max_concurrent_collections = Some(1);
 
-        // Down to File Concurrency
+        // Down to Download Mode
         update(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.selected_setting_index, 1);
         assert_eq!(app.settings_list_state.selected(), Some(1));
+
+        // Right cycles Download Mode to TorrentOnly
+        update(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.settings.download_mode, DownloadMode::TorrentOnly);
+
+        // Left cycles Download Mode back to Direct
+        update(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.settings.download_mode, DownloadMode::Direct);
+
+        // Down to File Concurrency
+        update(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected_setting_index, 2);
+        assert_eq!(app.settings_list_state.selected(), Some(2));
 
         // Right increases File Concurrency
         update(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
@@ -695,8 +716,8 @@ mod tests {
 
         // Down to Collection Concurrency
         update(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.selected_setting_index, 2);
-        assert_eq!(app.settings_list_state.selected(), Some(2));
+        assert_eq!(app.selected_setting_index, 3);
+        assert_eq!(app.settings_list_state.selected(), Some(3));
 
          // Right increases Collection Concurrency
         update(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));

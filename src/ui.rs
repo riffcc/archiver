@@ -460,7 +460,7 @@ fn render_ask_download_dir_input(app: &mut App, frame: &mut Frame) {
 fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
     let settings_block = Block::default()
         .borders(Borders::ALL)
-        .title("Settings (Esc: Save & Back, ↑/↓: Select, ←/→: Adjust)")
+        .title("Settings (Esc: Save & Back, ↑/↓: Select, ←/→: Adjust/Cycle)") // Updated hint
         .border_style(Style::default().fg(Color::Magenta)); // Distinct border color
 
     let inner_area = settings_block.inner(area);
@@ -472,23 +472,31 @@ fn render_settings_view(app: &mut App, frame: &mut Frame, area: Rect) {
         app.settings.download_directory.as_deref().unwrap_or("Not Set")
     );
 
+    // Use Display impl for DownloadMode
+    let download_mode_text = format!(
+        "Download Mode: {} {}",
+        app.settings.download_mode,
+        if app.selected_setting_index == 1 { "< >" } else { "" } // Hint for cycling
+    );
+
     let file_concurrency_text = format!(
         "Max Concurrent File Downloads: {} {}",
         app.settings.max_concurrent_downloads.map_or("Unlimited".to_string(), |n| n.to_string()),
-        if app.selected_setting_index == 1 { "< >" } else { "" } // Hint for adjustment
+        if app.selected_setting_index == 2 { "< >" } else { "" } // Hint for adjustment
     );
 
     let collection_concurrency_text = format!(
         "Max Concurrent Collection Downloads: {} {}",
         app.settings.max_concurrent_collections.map_or("Unlimited".to_string(), |n| n.to_string()),
-        if app.selected_setting_index == 2 { "< >" } else { "" } // Hint for adjustment
+        if app.selected_setting_index == 3 { "< >" } else { "" } // Hint for adjustment
     );
 
 
     let settings_items = vec![
-        ListItem::new(download_dir_text), // Index 0
-        ListItem::new(file_concurrency_text), // Index 1
-        ListItem::new(collection_concurrency_text), // Index 2
+        ListItem::new(download_dir_text),           // Index 0
+        ListItem::new(download_mode_text),          // Index 1
+        ListItem::new(file_concurrency_text),       // Index 2
+        ListItem::new(collection_concurrency_text), // Index 3
     ];
 
     let list = List::new(settings_items)
