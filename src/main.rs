@@ -84,9 +84,18 @@ async fn main() -> Result<()> {
     let (download_progress_tx, mut download_progress_rx) = mpsc::channel::<DownloadProgress>(50); // Increased buffer
 
     // --- Concurrency Limiter ---
-    // Use Arc for shared ownership across tasks
-    let max_downloads = app.settings.max_concurrent_downloads.unwrap_or(usize::MAX); // Use MAX if None (effectively unlimited)
-    let semaphore = Arc::new(Semaphore::new(max_downloads.max(1))); // Ensure at least 1 permit
+    // --- Concurrency Limiters ---
+    // Semaphore for limiting concurrent *file* downloads within items/collections
+    let max_file_downloads = app.settings.max_concurrent_downloads.unwrap_or(4).max(1); // Default 4, min 1
+    let file_semaphore = Arc::new(Semaphore::new(max_file_downloads));
+    info!("File download concurrency limit: {}", max_file_downloads);
+
+    // Semaphore for limiting concurrent *item processing* tasks within a collection download
+    // (controls concurrent metadata fetches primarily)
+    let max_item_tasks = app.settings.max_concurrent_collections.unwrap_or(2).max(1); // Default 2, min 1
+    let collection_item_semaphore = Arc::new(Semaphore::new(max_item_tasks));
+     info!("Collection item processing concurrency limit: {}", max_item_tasks);
+
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(io::stderr());
@@ -173,7 +182,8 @@ async fn main() -> Result<()> {
                                         let client_clone = app.client.clone();
                                         let base_dir_clone = base_dir.clone();
                                         let progress_tx_clone = download_progress_tx.clone();
-                                        let semaphore_clone = Arc::clone(&semaphore); // File download semaphore
+                                        let file_semaphore_clone = Arc::clone(&file_semaphore); // Use renamed semaphore
+                                        let collection_item_semaphore_clone = Arc::clone(&collection_item_semaphore); // Clone new semaphore
                                         let limiter_clone = Arc::clone(&rate_limiter); // Clone rate limiter
                                         let download_mode = app.settings.download_mode; // Get current download mode
                                         // Clone the current collection name *before* spawning the task
@@ -183,19 +193,19 @@ async fn main() -> Result<()> {
                                         tokio::spawn(async move {
                                             let result = match download_action {
                                                 DownloadAction::ItemAllFiles(item_id) => {
-                                                    // Pass semaphore, mode, AND limiter down
+                                                    // Pass file_semaphore, mode, AND limiter down
                                                     // Pass the captured collection name
-                                                    download_item(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, download_mode, progress_tx_clone.clone(), semaphore_clone, limiter_clone).await
+                                                    download_item(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, download_mode, progress_tx_clone.clone(), file_semaphore_clone, limiter_clone).await
                                                 }
                                                 DownloadAction::File(item_id, file) => {
-                                                    // Pass semaphore AND limiter down
+                                                    // Pass file_semaphore AND limiter down
                                                     // Mode doesn't apply here, always download the specific file
                                                     // Pass the captured collection name
-                                                    download_single_file(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, &file, progress_tx_clone.clone(), semaphore_clone, limiter_clone).await
+                                                    download_single_file(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, &file, progress_tx_clone.clone(), file_semaphore_clone, limiter_clone).await
                                                 }
                                                 DownloadAction::Collection(collection_id) => {
-                                                     // Pass semaphore, mode, AND limiter down, collection context is provided by download_collection itself
-                                                     download_collection(&client_clone, &base_dir_clone, &collection_id, download_mode, progress_tx_clone.clone(), semaphore_clone, limiter_clone).await
+                                                     // Pass both semaphores, mode, AND limiter down
+                                                     download_collection(&client_clone, &base_dir_clone, &collection_id, download_mode, progress_tx_clone.clone(), file_semaphore_clone, collection_item_semaphore_clone, limiter_clone).await
                                                 }
                                             };
 
@@ -366,7 +376,7 @@ async fn download_single_file(
     item_id: &str,
     file_details: &archive_api::FileDetails,
     progress_tx: mpsc::Sender<DownloadProgress>,
-    semaphore: Arc<Semaphore>,
+    file_semaphore: Arc<Semaphore>, // Renamed
     rate_limiter: AppRateLimiter, // Use the type alias
 ) -> Result<()> {
     let collection_str = collection_id.unwrap_or("<none>");
@@ -416,10 +426,10 @@ async fn download_single_file(
     // Acquire permit *before* making network request or creating file.
     // The permit is stored in `_permit` and will be dropped automatically
     // when this function returns (success or error).
-    debug!("Attempting to acquire download permit for file: {}", file_details.name);
-    let _permit = semaphore.acquire_owned().await.context("Failed to acquire download semaphore permit")?;
-    debug!("Acquired download permit for file: {}", file_details.name);
-    // --- Permit Acquired ---
+    debug!("Attempting to acquire file download permit for file: {}", file_details.name);
+    let _permit = file_semaphore.acquire_owned().await.context("Failed to acquire file download semaphore permit")?;
+    debug!("Acquired file download permit for file: {}", file_details.name);
+    // --- File Permit Acquired ---
 
 
     // --- Wait for Rate Limiter ---
@@ -513,7 +523,7 @@ async fn download_item(
     item_id: &str,
     mode: DownloadMode, // Added: Download mode
     progress_tx: mpsc::Sender<DownloadProgress>,
-    semaphore: Arc<Semaphore>,
+    file_semaphore: Arc<Semaphore>, // Renamed
     rate_limiter: AppRateLimiter, // Use the type alias
 ) -> Result<()> {
     let collection_str = collection_id.unwrap_or("<none>");
@@ -567,7 +577,7 @@ async fn download_item(
              let base_dir_clone = base_dir.to_string();
              let item_id_clone = item_id.to_string();
              let progress_tx_clone = progress_tx.clone();
-             let semaphore_clone = Arc::clone(&semaphore);
+             let file_semaphore_clone = Arc::clone(&file_semaphore); // Use renamed semaphore
              let limiter_clone_torrent = Arc::clone(&rate_limiter); // Clone limiter for torrent download
              let torrent_clone = torrent.clone(); // Clone the FileDetails
              let collection_id_task_clone = collection_id.map(|s| s.to_string());
@@ -580,7 +590,7 @@ async fn download_item(
                      &item_id_clone,
                      &torrent_clone, // Pass the torrent file details
                      progress_tx_clone,
-                     semaphore_clone,
+                     file_semaphore_clone, // Pass renamed semaphore
                      limiter_clone_torrent, // Pass limiter
                  )
                  .await
@@ -641,7 +651,7 @@ async fn download_item(
          let base_dir_clone = base_dir.to_string();
          let item_id_clone = item_id.to_string();
          let progress_tx_clone = progress_tx.clone();
-         let semaphore_clone = Arc::clone(&semaphore);
+         let file_semaphore_clone = Arc::clone(&file_semaphore); // Use renamed semaphore
          let limiter_clone_file = Arc::clone(&rate_limiter); // Clone limiter for file download
          let file_clone = file.clone();
          // Clone collection_id for the task (as Option<String>)
@@ -657,7 +667,7 @@ async fn download_item(
                  &item_id_clone,
                  &file_clone,
                  progress_tx_clone,
-                 semaphore_clone,
+                 file_semaphore_clone, // Pass renamed semaphore
                  limiter_clone_file, // Pass limiter
              )
              .await
@@ -702,7 +712,8 @@ async fn download_collection(
     collection_id: &str, // Now takes specific collection ID
     mode: DownloadMode, // Added: Download mode
     progress_tx: mpsc::Sender<DownloadProgress>,
-    semaphore: Arc<Semaphore>, // File download semaphore
+    file_semaphore: Arc<Semaphore>, // Renamed file download semaphore
+    collection_item_semaphore: Arc<Semaphore>, // Added item processing semaphore
     rate_limiter: AppRateLimiter, // Use the type alias
 ) -> Result<()> {
     info!("Starting download_collection for '{}', mode: {:?}", collection_id, mode);
@@ -740,18 +751,34 @@ async fn download_collection(
 
     // Iterate through identifiers and spawn item download tasks
     for item_id in all_identifiers.into_iter() {
+        // Acquire item processing permit *before* spawning
+        debug!("Attempting to acquire item processing permit for item: {}", item_id);
+        let item_permit = match collection_item_semaphore.clone().acquire_owned().await {
+            Ok(permit) => {
+                debug!("Acquired item processing permit for item: {}", item_id);
+                permit
+            },
+            Err(e) => {
+                error!("Failed to acquire item processing permit for item {}: {}", item_id, e);
+                // Skip this item if permit acquisition fails
+                total_failed_items += 1;
+                continue;
+            }
+        };
+        debug!("Acquired item processing permit for item: {}", item_id);
+
         // Clone data needed for the item download task
         let client_clone = client.clone();
         let base_dir_clone = base_dir.to_string();
         let progress_tx_clone = progress_tx.clone();
-        let semaphore_clone = Arc::clone(&semaphore); // Pass file semaphore down
+        let file_semaphore_clone = Arc::clone(&file_semaphore); // Pass file semaphore down
         let limiter_clone_item = Arc::clone(&rate_limiter); // Clone limiter for item download
         let item_id_clone = item_id.clone(); // Keep clone for task
         let collection_id_clone = collection_id.to_string(); // Clone collection ID for task
 
         let handle = tokio::spawn(async move {
             // download_item handles fetching details and spawning file downloads based on mode
-            // It uses the semaphore passed down for individual file permits
+            // It uses the file_semaphore passed down for individual file permits
             let item_result = download_item(
                 &client_clone,
                 &base_dir_clone,
@@ -759,10 +786,13 @@ async fn download_collection(
                 &item_id_clone,
                 mode, // Pass the download mode down
                 progress_tx_clone.clone(),
-                semaphore_clone, // Pass file semaphore
+                file_semaphore_clone, // Pass file semaphore
                 limiter_clone_item, // Pass limiter
             )
             .await;
+            // Drop the item permit when the task finishes
+            drop(item_permit);
+            debug!("Released item processing permit for item: {}", item_id_clone);
             item_result // Return result (Ok or Err)
         });
         join_handles.push(handle);
