@@ -228,42 +228,6 @@ pub async fn fetch_collection_items(
 
 
 /// Fetches detailed metadata and file list for a given item identifier, with retries.
-        .query(&[
-            ("q", query.as_str()),
-            ("fl[]", "identifier"), // Request only the identifier field for the list
-            // Add other fields to fl[] if needed later, e.g., "title"
-            ("rows", &rows.to_string()),
-            ("page", &page.to_string()), // Note: API might use 'start' instead of 'page' depending on endpoint version/preference
-            ("output", "json"),
-        ]);
-
-    // --- Wait for Rate Limiter ---
-    debug!("Waiting for rate limit permit for collection items: {}", collection_name);
-    rate_limiter.until_ready().await;
-    debug!("Acquired rate limit permit for collection items: {}", collection_name);
-    // --- Rate Limit Permit Acquired ---
-
-    debug!("Sending collection items request: {:?}", request_builder);
-    let response = request_builder.send().await.context("Failed to send collection items request")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let err_msg = format!("Collection items API request failed for '{}' with status: {}", collection_name, status);
-        error!("{}", err_msg);
-        return Err(anyhow!(err_msg));
-    }
-
-    let search_result = response
-        .json::<ArchiveSearchResponse>()
-        .await
-        .context(format!("Failed to parse JSON for collection items '{}'", collection_name))?;
-
-    info!("Successfully fetched {} items (total found: {}) for collection '{}', page {}",
-          search_result.response.docs.len(), search_result.response.num_found, collection_name, page);
-    Ok((search_result.response.docs, search_result.response.num_found))
-}
-
-/// Fetches detailed metadata and file list for a given item identifier, with retries.
 pub async fn fetch_item_details(
     client: &Client,
     identifier: &str,
