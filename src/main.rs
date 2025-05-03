@@ -567,10 +567,11 @@ async fn download_item(
                     // Otherwise, it's a transient error, proceed with retry logic
                     _ => {
                         warn!("Transient error fetching details for item '{}' (Attempt {}): {}. Retrying in {}s...", item_id, attempt, e, backoff_secs);
+                        // Use Debug format {:?} for e.kind
                         let _ = progress_tx.send(DownloadProgress::Status(format!("Retrying {} (Attempt {}, Wait {}s): {:?}", item_id, attempt, backoff_secs, e.kind))).await;
 
-                        // Wait for backoff duration
-                        tokio::time::sleep(TokioDuration::from_secs(backoff_secs)).await;
+                        // Wait for backoff duration (Use imported Duration)
+                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
 
                         // Increase backoff for next attempt, capped
                         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
