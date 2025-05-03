@@ -494,47 +494,68 @@ impl App {
      }
 
     /// Appends newly fetched items to the list and saves the entire list to the cache file.
-    /// The cache path is constructed as `$download_dir/$collection_name.json`.
+    /// The cache path is constructed as `$download_dir/.item_cache/$collection_name.json`.
     /// Returns `Ok(())` on success, or an `anyhow::Error` if saving fails or prerequisites are missing.
     pub fn append_and_save_items(&mut self, new_items: Vec<ArchiveDoc>) -> Result<()> {
+        log::debug!("Attempting to append and save items. New items count: {}", new_items.len());
+
         // 1. Append items to the internal list
+        let new_total = self.items.len() + new_items.len();
         self.items.extend(new_items);
+        log::debug!("Items appended. Total items now: {}", self.items.len());
+        // Basic check after append
+        if self.items.len() != new_total {
+             log::warn!("Item count mismatch after appending. Expected {}, got {}", new_total, self.items.len());
+        }
+
 
         // 2. Get necessary components for the path
+        log::debug!("Checking prerequisites for saving item cache...");
         let download_dir = self
             .settings
             .download_directory
             .as_ref()
             .context("Download directory is not set in settings")?;
+        log::debug!("Download directory found: {}", download_dir);
         let collection_name = self
             .current_collection_name
             .as_ref()
             .context("Current collection name is not set in app state")?; // Should be set before fetch starts
+        log::debug!("Collection name found: {}", collection_name);
 
         // 3. Construct the cache file path
+        log::debug!("Constructing cache file path...");
         let cache_dir = Path::new(download_dir);
         // Use a specific cache subdirectory for item lists
         let item_cache_dir = cache_dir.join(".item_cache");
         let cache_file_path = item_cache_dir.join(format!("{}.json", collection_name));
+        log::debug!("Target cache directory: {}", item_cache_dir.display());
+        log::debug!("Target cache file path: {}", cache_file_path.display());
 
 
         // 4. Ensure the specific item cache directory exists
+        log::debug!("Ensuring item cache directory exists...");
         fs::create_dir_all(&item_cache_dir).context(format!(
             "Failed to create item cache directory: {}",
             item_cache_dir.display()
         ))?;
+        log::debug!("Item cache directory ensured.");
 
         // 5. Serialize the *entire current* items list to JSON
+        log::debug!("Serializing {} items to JSON...", self.items.len());
         let json_data = serde_json::to_string_pretty(&self.items)
             .context("Failed to serialize item list to JSON")?;
+        log::debug!("Serialization successful. JSON size: {} bytes", json_data.len());
 
         // 6. Write the JSON data to the file (overwrite)
+        log::debug!("Writing JSON data to cache file: {}", cache_file_path.display());
         fs::write(&cache_file_path, json_data).context(format!(
             "Failed to write item cache file: {}",
             cache_file_path.display()
         ))?;
+        log::debug!("Successfully wrote cache file.");
 
-        log::debug!(
+        log::info!( // Changed to info for successful save confirmation
             "Successfully saved {} items to cache file: {}",
             self.items.len(),
             cache_file_path.display()
