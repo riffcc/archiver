@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn}; // Import log macros (removed LevelFilter)
-// Corrected the duplicate use statement and added the closing brace
 use rust_tui_app::{
     app::{App, AppRateLimiter, DownloadAction, DownloadProgress, UpdateAction}, // Import AppRateLimiter
-    archive_api::{self, ArchiveDoc, ItemDetails},
+    archive_api::{self, ArchiveDoc, FetchAllResult, ItemDetails}, // Add FetchAllResult
     event::{Event, EventHandler},
     settings::{self, DownloadMode},
     tui::Tui,
@@ -77,9 +76,9 @@ async fn main() -> Result<()> {
     let mut app = App::new(Arc::clone(&rate_limiter));
     app.load_settings(settings);
 
-    // Create a channel for collection search API results (now returns tuple)
-    let (collection_api_tx, mut collection_api_rx) = mpsc::channel::<Result<(Vec<ArchiveDoc>, usize)>>(1);
-    // Create a channel for item details API results (Update error type)
+    // Create a channel for incremental item fetch results
+    let (item_fetch_tx, mut item_fetch_rx) = mpsc::channel::<FetchAllResult>(10); // Buffer size 10 for batches
+    // Create a channel for item details API results
     let (item_details_tx, mut item_details_rx) = mpsc::channel::<Result<ItemDetails, archive_api::FetchDetailsError>>(1);
     // Create a channel for download progress updates
     let (download_progress_tx, mut download_progress_rx) = mpsc::channel::<DownloadProgress>(50); // Increased buffer
@@ -123,25 +122,36 @@ async fn main() -> Result<()> {
                     Event::Tick => app.tick(),
                     Event::Key(key_event) => {
                         // Handle input and check if an action is requested
-                        if let Some(action) = update(&mut app, key_event) { // update now returns Option<UpdateAction>
+                        if let Some(action) = update(&mut app, key_event) {
                             match action {
-                                UpdateAction::FetchCollectionItems(collection_name) => {
-                                    // This action is now triggered when selecting a collection
-                                    app.is_loading = true; // Set loading state for item list
-                                    app.items.clear(); // Clear previous items
-                                    app.error_message = None;
-                                    app.download_status = None;
-                                    // current_collection_name should already be set by update()
-                                    // assert_eq!(app.current_collection_name.as_ref(), Some(&collection_name));
+                                UpdateAction::StartIncrementalItemFetch(collection_name) => {
+                                    // Triggered when selecting a collection in update()
+                                    // State (is_loading, items cleared, etc.) should be set by update()
+                                    app.error_message = None; // Clear previous errors
+                                    app.download_status = None; // Clear status
+
+                                    // Ensure collection name matches the one set in app state by update()
+                                    if app.current_collection_name.as_ref() != Some(&collection_name) {
+                                        error!("Mismatch between action collection name '{}' and app state '{}'",
+                                               collection_name, app.current_collection_name.as_deref().unwrap_or("<None>"));
+                                        app.is_loading = false; // Reset loading state on error
+                                        app.error_message = Some("Internal error: Collection name mismatch.".to_string());
+                                        continue; // Skip spawning task
+                                    }
 
                                     let client = app.client.clone();
-                                    let tx = collection_api_tx.clone();
-                                    let limiter_clone = Arc::clone(&rate_limiter); // Clone limiter for task
-                                    // Spawn task to fetch items for the specific collection
+                                    let tx = item_fetch_tx.clone(); // Use the new channel sender
+                                    let limiter_clone = Arc::clone(&rate_limiter);
+                                    // Spawn the incremental fetch task
                                     tokio::spawn(async move {
-                                        // TODO: Add pagination support later (rows=50, page=1 for now)
-                                        let result = archive_api::fetch_collection_items(&client, &collection_name, 50, 1, limiter_clone).await;
-                                        let _ = tx.send(result).await;
+                                        archive_api::fetch_all_collection_items_incremental(
+                                            &client,
+                                            &collection_name,
+                                            limiter_clone,
+                                            tx, // Pass the sender
+                                        )
+                                        .await;
+                                        // Task finishes when sender is dropped inside the function
                                     });
                                 }
                                 UpdateAction::FetchItemDetails => {
@@ -240,29 +250,46 @@ async fn main() -> Result<()> {
                     Event::Resize(_, _) => {} // Terminal handles resize redraw automatically
                 }
             }
-            // Handle collection search API results
-            Some(result) = collection_api_rx.recv() => {
-                app.is_loading = false; // Reset collection loading state
+            // Handle incremental item fetch results
+            result = item_fetch_rx.recv() => { // Use Option pattern for channel close
                 match result {
-                    Ok((items, total_found)) => {
-                        app.items = items;
-                        app.total_items_found = Some(total_found);
-                        if !app.items.is_empty() {
-                            app.item_list_state.select(Some(0)); // Select first item in item list
-                        } else {
-                            app.item_list_state.select(None); // Deselect if list is empty
-                        }
-                        // Don't clear error message here, might be unrelated save error etc.
-                        // update() clears errors at the start of handling event.
+                    Some(FetchAllResult::TotalItems(count)) => {
+                        app.total_items_found = Some(count);
+                        // Maybe update status bar?
                     }
-                    Err(e) => {
-                        // Error fetching items for the selected collection
-                        let err_msg = format!("Error fetching items: {}", e);
-                        error!("{}", err_msg); // Log the error
-                        app.items.clear();
-                        app.total_items_found = None;
-                        app.item_list_state.select(None);
-                        app.error_message = Some(err_msg);
+                    Some(FetchAllResult::Items(batch)) => {
+                        let was_empty = app.items.is_empty();
+                        // Append and save the batch
+                        if let Err(e) = app.append_and_save_items(batch) {
+                            let err_msg = format!("Error saving item cache: {}", e);
+                            error!("{}", err_msg);
+                            app.error_message = Some(err_msg);
+                            // Consider stopping the fetch? For now, continue receiving but show error.
+                            app.is_loading = false; // Stop loading indicator on save error
+                        } else {
+                            // Select first item only if the list *was* empty before this batch
+                            if was_empty && !app.items.is_empty() {
+                                app.item_list_state.select(Some(0));
+                            }
+                        }
+                    }
+                    Some(FetchAllResult::Error(msg)) => {
+                        error!("Item fetch error: {}", msg);
+                        app.error_message = Some(format!("Item fetch error: {}", msg));
+                        app.is_loading = false; // Stop loading indicator
+                    }
+                    None => {
+                        // Channel closed, fetch is complete (or aborted)
+                        info!("Item fetch channel closed.");
+                        app.is_loading = false; // Ensure loading indicator is off
+                        // Check if total found matches items length if needed
+                        if let Some(total) = app.total_items_found {
+                            if total != app.items.len() {
+                                warn!("Final item count ({}) differs from reported total ({})", app.items.len(), total);
+                                // Optionally update total_items_found to match actual count
+                                // app.total_items_found = Some(app.items.len());
+                            }
+                        }
                     }
                 }
             }
