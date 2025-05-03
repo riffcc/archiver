@@ -202,6 +202,7 @@ mod tests {
 
          let settings_to_save = Settings {
              download_directory: Some("test_dir".to_string()),
+             download_mode: DownloadMode::Direct, // Add the missing field
              max_concurrent_downloads: Some(5),
              favorite_collections: vec!["coll1".to_string(), "coll2".to_string()],
              max_concurrent_collections: Some(2),
