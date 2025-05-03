@@ -329,11 +329,6 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
 
 /// Fetches ALL item identifiers for a given collection using pagination.
 pub async fn fetch_all_collection_identifiers(
-        // Log error but continue, as sometimes non-existent items return non-success but valid (empty) JSON
-        error!(
-            "Metadata API request for '{}' returned non-success status: {}",
-            identifier,
-            status
     client: &Client,
     collection_name: &str,
 ) -> Result<Vec<String>> {
