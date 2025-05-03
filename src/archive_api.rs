@@ -3,7 +3,7 @@ use log::{debug, error, info, warn}; // Import log macros
 use reqwest::{Client, StatusCode}; // Import StatusCode
 use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc};
-use tokio::time::{sleep, Duration as TokioDuration}; // Import sleep and Tokio Duration for retries
+use tokio::{sync::mpsc, time::{sleep, Duration as TokioDuration}}; // Import mpsc, sleep and Tokio Duration for retries
 use crate::app::AppRateLimiter; // Use the type alias from app.rs
 
 const ADVANCED_SEARCH_URL: &str = "https://archive.org/advancedsearch.php";
@@ -478,77 +478,116 @@ pub async fn fetch_item_details(
     }
 }
 
+/// Represents messages sent back from the incremental fetch task.
+#[derive(Debug)]
+pub enum FetchAllResult {
+    /// The total number of items found (sent once from the first page).
+    TotalItems(usize),
+    /// A batch of items fetched from a page.
+    Items(Vec<ArchiveDoc>),
+    /// An error occurred during fetching.
+    Error(String),
+}
 
-/// Fetches ALL item identifiers for a given collection using pagination.
-pub async fn fetch_all_collection_identifiers(
+
+/// Fetches ALL item identifiers for a given collection using pagination, sending results incrementally.
+///
+/// Sends `FetchAllResult` messages through the provided sender.
+/// Closes the sender when done or on fatal error.
+pub async fn fetch_all_collection_items_incremental(
     client: &Client,
     collection_name: &str,
-    rate_limiter: AppRateLimiter, // Added rate limiter parameter
-) -> Result<Vec<String>> {
-    info!("Fetching all identifiers for collection: {}", collection_name);
-    let mut all_identifiers = Vec::new();
+    rate_limiter: AppRateLimiter,
+    sender: mpsc::Sender<FetchAllResult>, // Sender for incremental results
+) {
+    info!("Starting incremental fetch for collection: {}", collection_name);
     let mut current_page = 1;
-    let mut total_found = 0;
+    let mut total_found: Option<usize> = None; // Use Option to track if first page total was sent
     let mut fetched_count = 0;
 
-   loop {
-       // Clone limiter for each page fetch
-       let limiter_clone = Arc::clone(&rate_limiter);
-       let (docs, page_total_found) = fetch_collection_items(
+    loop {
+        // Clone limiter for each page fetch
+        let limiter_clone = Arc::clone(&rate_limiter);
+        let fetch_result = fetch_collection_items(
            client,
            collection_name,
            ROWS_PER_PAGE,
            current_page,
-           limiter_clone, // Pass limiter
-       )
-       .await
-       .context(format!(
-            "Failed to fetch page {} for collection '{}'",
-            current_page, collection_name
-        ))?;
+            client,
+            collection_name,
+            ROWS_PER_PAGE,
+            current_page,
+            limiter_clone,
+        )
+        .await;
 
-        debug!("Fetched page {} for collection '{}'. Found {} docs on page, total reported: {}",
-               current_page, collection_name, docs.len(), page_total_found);
+        match fetch_result {
+            Ok((docs, page_total_found)) => {
+                debug!("Fetched page {} for collection '{}'. Found {} docs on page, total reported: {}",
+                       current_page, collection_name, docs.len(), page_total_found);
 
-        // Set total_found on the first successful page fetch
-        if current_page == 1 {
-            total_found = page_total_found;
-            info!("Total items reported for collection '{}': {}", collection_name, total_found);
-        } else if total_found != page_total_found {
-            warn!(
-                "Total items found changed between page 1 ({}) and page {} ({}) for collection '{}'. Using first page total.",
-                total_found, current_page, page_total_found, collection_name
-            );
-            // Continue using the total_found from the first page.
+                // Send total_found on the first successful page fetch
+                if total_found.is_none() {
+                    total_found = Some(page_total_found);
+                    info!("Total items reported for collection '{}': {}", collection_name, page_total_found);
+                    if sender.send(FetchAllResult::TotalItems(page_total_found)).await.is_err() {
+                        warn!("Receiver dropped while sending total items for collection '{}'. Aborting fetch.", collection_name);
+                        return; // Exit if receiver is gone
+                    }
+                } else if total_found != Some(page_total_found) {
+                    warn!(
+                        "Total items found changed between page 1 ({:?}) and page {} ({}) for collection '{}'. Using first page total.",
+                        total_found, current_page, page_total_found, collection_name
+                    );
+                    // Continue using the total_found from the first page.
+                }
+
+                let num_docs_on_page = docs.len();
+                fetched_count += num_docs_on_page;
+
+                // Send the batch of items if not empty
+                if !docs.is_empty() {
+                    if sender.send(FetchAllResult::Items(docs)).await.is_err() {
+                         warn!("Receiver dropped while sending items for collection '{}'. Aborting fetch.", collection_name);
+                         return; // Exit if receiver is gone
+                    }
+                }
+
+                // Check termination conditions using the total_found established on page 1:
+                // 1. If total_found is Some(0), stop immediately.
+                // 2. If the number of docs received on this page is less than requested, it must be the last page.
+                // 3. If we have fetched at least as many items as the total reported, we are done.
+                let current_total = total_found.unwrap_or(0); // Use 0 if total_found is still None (shouldn't happen after page 1 unless error)
+                if current_total == 0 || num_docs_on_page < ROWS_PER_PAGE || fetched_count >= current_total {
+                    break; // Finished successfully
+                }
+
+                // Prepare for the next page
+                current_page += 1;
+
+                // Optional: Add a small delay between requests to be polite to the API
+                // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => {
+                let error_msg = format!(
+                    "Failed to fetch page {} for collection '{}': {}",
+                    current_page, collection_name, e
+                );
+                error!("{}", error_msg);
+                // Send error message and terminate
+                let _ = sender.send(FetchAllResult::Error(error_msg)).await; // Ignore error if receiver is already gone
+                return; // Exit on error
+            }
         }
+    } // End loop
 
-        let num_docs_on_page = docs.len();
-        fetched_count += num_docs_on_page;
-
-        // Add identifiers from the current page
-        all_identifiers.extend(docs.into_iter().map(|doc| doc.identifier));
-
-        // Check termination conditions:
-        // 1. If total_found is 0, stop immediately.
-        // 2. If the number of docs received on this page is less than requested, it must be the last page.
-        // 3. If we have fetched at least as many items as the total reported, we are done.
-        if total_found == 0 || num_docs_on_page < ROWS_PER_PAGE || fetched_count >= total_found {
-            break;
+    info!("Finished incremental fetch for collection '{}'. Found {} items.", collection_name, fetched_count);
+    if let Some(total) = total_found {
+         if total > 0 && fetched_count != total {
+            warn!("Fetched item count ({}) does not match reported total ({}) for collection '{}'.", fetched_count, total, collection_name);
         }
-
-        // Prepare for the next page
-        current_page += 1;
-
-        // Optional: Add a small delay between requests to be polite to the API
-        // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-
-    info!("Finished fetching identifiers for collection '{}'. Found {} identifiers.", collection_name, fetched_count);
-    if total_found > 0 && fetched_count != total_found {
-        warn!("Fetched identifier count ({}) does not match reported total ({}) for collection '{}'.", fetched_count, total_found, collection_name);
-    }
-
-    Ok(all_identifiers)
+    // Sender is automatically dropped when this function returns, signaling completion.
 }
 
 

@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn}; // Import log macros (removed LevelFilter)
 use rust_tui_app::{
     app::{App, AppRateLimiter, DownloadAction, DownloadProgress, UpdateAction}, // Import AppRateLimiter
-    archive_api::{self, ArchiveDoc, FetchAllResult, ItemDetails}, // Add FetchAllResult
+    archive_api::{self, FetchAllResult, ItemDetails}, // Add FetchAllResult, Remove ArchiveDoc
     event::{Event, EventHandler},
     settings::{self, DownloadMode},
     tui::Tui,
@@ -563,7 +563,9 @@ async fn download_item(
     let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
 
     // --- Fetch item details with retry logic ---
-    let mut details: Option<ItemDetails> = None;
+    // Initialize details directly inside the loop or after successful fetch
+    // let mut details: Option<ItemDetails> = None; // Remove initial assignment
+    let details: ItemDetails; // Declare details, assign on success
     let mut attempt = 0;
     let mut backoff_secs = 1; // Initial backoff delay
     const MAX_BACKOFF_SECS: u64 = 60 * 10; // Cap backoff at 10 minutes
@@ -576,7 +578,7 @@ async fn download_item(
         match details_result {
             Ok(fetched_details) => {
                 info!("Successfully fetched details for item '{}' on attempt {}", item_id, attempt);
-                details = Some(fetched_details); // Corrected typo: fetched__details -> fetched_details
+                details = fetched_details; // Assign directly on success
                 break; // Exit loop on success
             }
             Err(e) => {
@@ -610,8 +612,7 @@ async fn download_item(
         // Loop continues only if it was a transient error
     } // --- End fetch details retry loop ---
 
-    // If we break the loop, details must be Some
-    let details = details.expect("Details should be Some after successful fetch loop");
+    // 'details' is now guaranteed to be initialized if the loop breaks successfully
 
     let total_files = details.files.len();
     info!("Found {} files for item '{}'", total_files, item_id);

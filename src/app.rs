@@ -1,11 +1,13 @@
 use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
 use crate::settings::Settings;
 // Use SystemClock and align middleware Instant type
+use anyhow::{Context, Result}; // Add Result
 use governor::{RateLimiter, clock::SystemClock, state::{InMemoryState, direct::NotKeyed}, middleware::NoOpMiddleware}; // Corrected InMemoryState path
 use ratatui::widgets::ListState;
 use reqwest::Client;
+use serde_json; // Add serde_json
 // Import SystemTime to match SystemClock
-use std::{path::PathBuf, sync::Arc, time::{Instant, Duration, SystemTime}};
+use std::{fs, path::{Path, PathBuf}, sync::Arc, time::{Instant, Duration, SystemTime}}; // Add fs, Path
 
 /// Type alias for the specific RateLimiter used in the app
 // Use SystemClock, the public InMemoryState path, and SystemTime for middleware
@@ -115,12 +117,14 @@ pub struct App {
     pub rate_limiter: AppRateLimiter,
 }
 
-/// Actions that the main loop should perform based on user input.
+/// Actions that the main loop should perform based on user input or events.
 #[derive(Clone, Debug)]
 pub enum UpdateAction {
-    /// Fetch items for a specific collection identifier.
-    FetchCollectionItems(String),
+    /// Start fetching items incrementally for a collection identifier.
+    StartIncrementalItemFetch(String),
+    /// Fetch details for the currently selected item.
     FetchItemDetails,
+    /// Start a download operation.
     StartDownload(DownloadAction),
     /// Save the current settings (e.g., after adding/removing a collection or exiting settings).
     SaveSettings,
@@ -488,4 +492,54 @@ impl App {
              _ => None, // Missing necessary info
          }
      }
+
+    /// Appends newly fetched items to the list and saves the entire list to the cache file.
+    /// The cache path is constructed as `$download_dir/$collection_name.json`.
+    /// Returns `Ok(())` on success, or an `anyhow::Error` if saving fails or prerequisites are missing.
+    pub fn append_and_save_items(&mut self, new_items: Vec<ArchiveDoc>) -> Result<()> {
+        // 1. Append items to the internal list
+        self.items.extend(new_items);
+
+        // 2. Get necessary components for the path
+        let download_dir = self
+            .settings
+            .download_directory
+            .as_ref()
+            .context("Download directory is not set in settings")?;
+        let collection_name = self
+            .current_collection_name
+            .as_ref()
+            .context("Current collection name is not set in app state")?; // Should be set before fetch starts
+
+        // 3. Construct the cache file path
+        let cache_dir = Path::new(download_dir);
+        // Use a specific cache subdirectory for item lists
+        let item_cache_dir = cache_dir.join(".item_cache");
+        let cache_file_path = item_cache_dir.join(format!("{}.json", collection_name));
+
+
+        // 4. Ensure the specific item cache directory exists
+        fs::create_dir_all(&item_cache_dir).context(format!(
+            "Failed to create item cache directory: {}",
+            item_cache_dir.display()
+        ))?;
+
+        // 5. Serialize the *entire current* items list to JSON
+        let json_data = serde_json::to_string_pretty(&self.items)
+            .context("Failed to serialize item list to JSON")?;
+
+        // 6. Write the JSON data to the file (overwrite)
+        fs::write(&cache_file_path, json_data).context(format!(
+            "Failed to write item cache file: {}",
+            cache_file_path.display()
+        ))?;
+
+        log::debug!(
+            "Successfully saved {} items to cache file: {}",
+            self.items.len(),
+            cache_file_path.display()
+        );
+
+        Ok(())
+    }
 }

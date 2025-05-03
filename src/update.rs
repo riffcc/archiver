@@ -105,9 +105,11 @@ fn handle_collections_pane_input(app: &mut App, key_event: KeyEvent) {
                 app.current_collection_name = Some(collection_name.clone());
                 app.items.clear(); // Clear previous items
                 app.item_list_state.select(None); // Reset item selection
+                app.total_items_found = None; // Reset total count
                 app.is_loading = true; // Set loading flag for items
-                app.pending_action = Some(UpdateAction::FetchCollectionItems(collection_name));
-                app.active_pane = ActivePane::Items; // Switch focus to items pane after loading
+                // Dispatch the new action to start incremental fetching
+                app.pending_action = Some(UpdateAction::StartIncrementalItemFetch(collection_name));
+                app.active_pane = ActivePane::Items; // Switch focus to items pane
             }
         }
         KeyCode::Char('a') => {
