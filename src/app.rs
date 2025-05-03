@@ -1,14 +1,15 @@
 use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
 use crate::settings::Settings;
-// Use SystemClock to align with std::time::Instant used by NoOpMiddleware
-use governor::{RateLimiter, clock::SystemClock, state::{direct::NotKeyed, in_memory::InMemoryState}, middleware::NoOpMiddleware};
+// Use SystemClock and align middleware Instant type
+use governor::{RateLimiter, clock::SystemClock, state::{InMemoryState, direct::NotKeyed}, middleware::NoOpMiddleware}; // Corrected InMemoryState path
 use ratatui::widgets::ListState;
 use reqwest::Client;
-use std::{path::PathBuf, sync::Arc, time::{Instant, Duration}}; // Add Arc, Duration
+// Import SystemTime to match SystemClock
+use std::{path::PathBuf, sync::Arc, time::{Instant, Duration, SystemTime}};
 
 /// Type alias for the specific RateLimiter used in the app
-// Use SystemClock and the public InMemoryState path
-pub type AppRateLimiter = Arc<RateLimiter<NotKeyed, InMemoryState, SystemClock, NoOpMiddleware<Instant>>>;
+// Use SystemClock, the public InMemoryState path, and SystemTime for middleware
+pub type AppRateLimiter = Arc<RateLimiter<NotKeyed, InMemoryState, SystemClock, NoOpMiddleware<SystemTime>>>;
 
 /// Represents the different states or modes the application can be in.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -26,6 +26,7 @@ governor = { version = "0.6", features = ["std", "jitter"] } # For rate limiting
 
 [dev-dependencies]
 tempfile = "3.10.1" # Added for tests needing temp dirs
+nonzero-ext = "0.3.0" # Needed for Quota::per_... in tests
 
 
 [lib]

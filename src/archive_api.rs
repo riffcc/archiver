@@ -425,10 +425,10 @@ pub async fn fetch_all_collection_identifiers(
 mod tests {
     use super::*;
     use crate::app::AppRateLimiter; // Use the type alias
-    use governor::{Quota, RateLimiter}; // Import governor items for tests
-    use nonzero_ext::nonzero; // For Quota::per_minute in test limiter
+    use governor::{Quota, RateLimiter, clock::SystemClock}; // Import governor items for tests, including SystemClock
+    // Removed unused nonzero_ext import
     use reqwest::Client;
-    use std::{num::NonZeroU32, sync::Arc, time::Duration}; // Import Arc, NonZeroU32
+    use std::{sync::Arc, time::Duration, num::NonZeroU32}; // Import Arc, Duration, NonZeroU32
     use tokio;
 
     // Helper function to create a client with timeouts for tests
@@ -442,7 +442,10 @@ mod tests {
 
     // Helper function to create a dummy rate limiter for tests (allows all requests)
     fn test_limiter() -> AppRateLimiter {
-        Arc::new(RateLimiter::direct(Quota::infinite()))
+        // Use a very large quota instead of infinite()
+        let quota = Quota::per_hour(NonZeroU32::new(u32::MAX).unwrap());
+        // Use direct_with_clock and SystemClock to match the AppRateLimiter type alias
+        Arc::new(RateLimiter::direct_with_clock(quota, &SystemClock::default()))
     }
 
     // --- Integration Tests (require network access to archive.org) ---

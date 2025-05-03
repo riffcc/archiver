@@ -453,16 +453,25 @@ fn handle_adding_collection_input(app: &mut App, key_event: KeyEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{ActivePane, App, AppState}; // Add ActivePane
+    use crate::app::{ActivePane, App, AppRateLimiter, AppState}; // Add ActivePane, AppRateLimiter
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    // Removed unused imports: std::{env, fs}, tempfile::tempdir
+    // Import necessary items for dummy rate limiter
+    use governor::{Quota, RateLimiter, clock::SystemClock};
+    use std::{num::NonZeroU32, sync::Arc};
+
+    // Helper function to create a dummy rate limiter for tests (allows all requests)
+    fn test_limiter() -> AppRateLimiter {
+        let quota = Quota::per_hour(NonZeroU32::new(u32::MAX).unwrap());
+        Arc::new(RateLimiter::direct_with_clock(quota, &SystemClock::default()))
+    }
 
     // Helper for setting up test environment with mock config
     // Note: This helper doesn't need to interact with the actual config file system anymore,
     // as App::load_settings uses the default path logic which is tested separately in settings::tests.
     // We just need an App instance with some initial settings for UI interaction tests.
     fn setup_test_app() -> App {
-        let mut app = App::new();
+        let limiter = test_limiter(); // Create dummy limiter
+        let mut app = App::new(limiter); // Pass the limiter
         // Set some initial settings directly for testing UI logic
         app.settings.favorite_collections = vec!["coll1".to_string(), "coll2".to_string(), "coll3".to_string()];
         app.settings.download_directory = Some("/fake/test/dir".to_string()); // Assume a dir is set for some tests
