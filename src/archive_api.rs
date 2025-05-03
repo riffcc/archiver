@@ -311,6 +311,16 @@ pub async fn fetch_item_details(
             // Attempt to parse the successful response
             match response.json::<ItemMetadataResponse>().await {
                 Ok(raw_details) => {
+                    // --- Check if essential data is missing even on 200 OK ---
+                    if raw_details.metadata.is_none() && raw_details.files.is_none() {
+                        warn!("Received 200 OK but metadata and files are missing for identifier '{}'. Treating as NotFound.", identifier);
+                        return Err(FetchDetailsError {
+                            kind: FetchDetailsErrorKind::NotFound,
+                            source: anyhow!("Metadata and files missing in successful response"),
+                            identifier: identifier.to_string(),
+                        });
+                    }
+
                     // --- Start of existing processing logic ---
                     // Helper function to extract the first string from a Value (string or array)
                 let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
@@ -657,10 +667,8 @@ mod tests {
         let identifier = "enrmp270_litmus_-_perception_of_light";
         let limiter = test_limiter(); // Create dummy limiter
 
-        let limiter = test_limiter(); // Create dummy limiter
-
         // Act
-        let result = fetch_item_details(&client, identifier, limiter).await;
+        let result = fetch_item_details(&client, identifier, limiter).await; // Use the declared limiter
 
         // Assert
         if let Err(ref e) = result {
