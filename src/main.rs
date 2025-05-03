@@ -11,13 +11,14 @@ use rust_tui_app::{
 }; // Removed extra closing brace
 use ratatui::{backend::CrosstermBackend, Terminal};
 // Use SystemClock here to match the AppRateLimiter definition
-use governor::{Quota, RateLimiter, clock::SystemClock, state::direct::NotKeyed};
-use governor::middleware::NoOpMiddleware;
-use nonzero_ext::nonzero;
+use governor::{Quota, RateLimiter, clock::SystemClock}; // Removed unused NotKeyed
+// Removed unused NoOpMiddleware import
+// Removed unused nonzero_ext import
 use reqwest::Client;
 use simplelog::{Config, WriteLogger, LevelFilter}; // Import necessary simplelog items
 use std::{fs::File, io, num::NonZeroU32, path::Path, sync::Arc, time::Instant}; // Add NonZeroU32, File, Path
 use tokio::sync::{mpsc, Semaphore};
+use tokio::time::Duration; // Import tokio Duration
 /// Fails if the log file cannot be created or written to.
 fn initialize_logging() -> Result<()> {
     let log_path = Path::new("/var/log/riffarchiver.log");
@@ -78,8 +79,8 @@ async fn main() -> Result<()> {
 
     // Create a channel for collection search API results (now returns tuple)
     let (collection_api_tx, mut collection_api_rx) = mpsc::channel::<Result<(Vec<ArchiveDoc>, usize)>>(1);
-    // Create a channel for item details API results
-    let (item_details_tx, mut item_details_rx) = mpsc::channel::<Result<ItemDetails>>(1);
+    // Create a channel for item details API results (Update error type)
+    let (item_details_tx, mut item_details_rx) = mpsc::channel::<Result<ItemDetails, archive_api::FetchDetailsError>>(1);
     // Create a channel for download progress updates
     let (download_progress_tx, mut download_progress_rx) = mpsc::channel::<DownloadProgress>(50); // Increased buffer
 
@@ -269,6 +270,7 @@ async fn main() -> Result<()> {
             Some(result) = item_details_rx.recv() => {
                 app.is_loading_details = false; // Reset details loading state
                 match result {
+                    // Update match arm to handle FetchDetailsError
                     Ok(details) => {
                         app.current_item_details = Some(details);
                         // Select first file if available
@@ -279,7 +281,9 @@ async fn main() -> Result<()> {
                         }
                         app.error_message = None; // Clear error on success
                     }
+                    // Update match arm to handle FetchDetailsError
                     Err(e) => {
+                        // Use the Display impl of FetchDetailsError directly
                         let err_msg = format!("Error fetching item details: {}", e);
                         error!("{}", err_msg); // Log the error
                         app.current_item_details = None; // Clear details on error
@@ -545,7 +549,7 @@ async fn download_item(
         match details_result {
             Ok(fetched_details) => {
                 info!("Successfully fetched details for item '{}' on attempt {}", item_id, attempt);
-                details = Some(fetched__details);
+                details = Some(fetched_details); // Corrected typo: fetched__details -> fetched_details
                 break; // Exit loop on success
             }
             Err(e) => {
