@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn}; // Import log macros
-// Removed unused governor imports here, AppRateLimiter alias is used
-use reqwest::Client;
+use reqwest::{Client, StatusCode}; // Import StatusCode
 use serde::Deserialize;
-use std::{collections::HashMap, sync::Arc}; // Removed unused time::Instant
+use std::{collections::HashMap, sync::Arc};
 use tokio::time::{sleep, Duration as TokioDuration}; // Import sleep and Tokio Duration for retries
 use crate::app::AppRateLimiter; // Use the type alias from app.rs
 
@@ -101,6 +100,45 @@ pub struct ItemDetails {
     pub collections: Vec<String>,
     pub files: Vec<FileDetails>, // Store the list of files
     pub download_base_url: Option<String>, // Constructed base URL for downloads
+}
+
+/// Specific errors that can occur during `fetch_item_details`.
+#[derive(Debug)]
+pub enum FetchDetailsErrorKind {
+    /// Item not found (e.g., HTTP 404). Considered permanent.
+    NotFound,
+    /// Failed to parse the JSON response. Considered permanent.
+    ParseError,
+    /// Network-related error during the request (e.g., timeout, DNS). Potentially transient.
+    NetworkError,
+    /// Server-side error (e.g., HTTP 5xx). Potentially transient.
+    ServerError(StatusCode),
+    /// Client-side error other than 404 (e.g., 400, 403). Considered permanent.
+    ClientError(StatusCode),
+    /// Should not happen if rate limiter is working, but included for completeness. Potentially transient.
+    RateLimitExceeded, // Typically HTTP 429
+    /// Any other unexpected error. Potentially transient.
+    Other,
+}
+
+/// Error type returned by `fetch_item_details`.
+#[derive(Debug)]
+pub struct FetchDetailsError {
+    pub kind: FetchDetailsErrorKind,
+    pub source: anyhow::Error,
+    pub identifier: String, // Include identifier for context
+}
+
+impl std::fmt::Display for FetchDetailsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Failed to fetch details for '{}': {:?} - {}", self.identifier, self.kind, self.source)
+    }
+}
+
+impl std::error::Error for FetchDetailsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.source()
+    }
 }
 
 
@@ -228,55 +266,53 @@ pub async fn fetch_collection_items(
 
 
 /// Fetches detailed metadata and file list for a given item identifier, with retries.
+/// Fetches detailed metadata and file list for a given item identifier.
+/// Returns `FetchDetailsError` on failure, classifying the error type.
 pub async fn fetch_item_details(
     client: &Client,
     identifier: &str,
     rate_limiter: AppRateLimiter, // Added rate limiter parameter
-) -> Result<ItemDetails> {
+) -> Result<ItemDetails, FetchDetailsError> { // Changed return type
     info!("Fetching item details for identifier: {}", identifier);
     let url = format!("{}{}", METADATA_URL_BASE, identifier);
-    let max_retries = 3;
-    let mut last_error: Option<anyhow::Error> = None;
 
-   for attempt in 1..=max_retries {
-       debug!("Requesting item details from URL: {} (Attempt {}/{})", url, attempt, max_retries);
+    // --- Wait for Rate Limiter ---
+    debug!("Waiting for rate limit permit for item details: {}", identifier);
+    rate_limiter.until_ready().await;
+    debug!("Acquired rate limit permit for item details: {}", identifier);
+    // --- Rate Limit Permit Acquired ---
 
-       // --- Wait for Rate Limiter ---
-       // Wait *before* each attempt, including retries
-       debug!("Waiting for rate limit permit for item details: {}", identifier);
-       rate_limiter.until_ready().await;
-       debug!("Acquired rate limit permit for item details: {}", identifier);
-       // --- Rate Limit Permit Acquired ---
+    debug!("Requesting item details from URL: {}", url);
+    let response_result = client.get(&url).send().await;
 
-       match client.get(&url).send().await {
-           Ok(response) => {
-               if !response.status().is_success() {
-                    let status = response.status();
-                    // Log non-success status but proceed to parse, as API might return OK with empty data for not found
-                    warn!(
-                        "Metadata API request for '{}' returned non-success status: {} (Attempt {}/{})",
-                        identifier, status, attempt, max_retries
-                    );
-                    // Fall through to parsing
-                }
+    match response_result {
+        Ok(response) => {
+            let status = response.status();
+            if !status.is_success() {
+                // Classify HTTP errors
+                let kind = match status {
+                    StatusCode::NOT_FOUND => FetchDetailsErrorKind::NotFound,
+                    StatusCode::TOO_MANY_REQUESTS => FetchDetailsErrorKind::RateLimitExceeded,
+                    s if s.is_client_error() => FetchDetailsErrorKind::ClientError(s),
+                    s if s.is_server_error() => FetchDetailsErrorKind::ServerError(s),
+                    _ => FetchDetailsErrorKind::Other, // Should not happen often
+                };
+                let err = anyhow!("Metadata API request failed with status: {}", status);
+                warn!("{} for identifier '{}'", err, identifier); // Log warning for non-success
+                // Return specific error, even if we attempt parsing later for some cases (like 404)
+                // For 404, we might still get an empty JSON, but we treat 404 itself as the primary error.
+                 return Err(FetchDetailsError {
+                    kind,
+                    source: err,
+                    identifier: identifier.to_string(),
+                });
+            }
 
-                // Attempt to parse the response regardless of status code (might contain useful error info or be empty)
-                let raw_details = match response.json::<ItemMetadataResponse>().await {
-                     Ok(details) => details,
-                     Err(e) => {
-                         let parse_err = anyhow!(e).context(format!(
-                             "Failed to parse JSON response for item details '{}' (Attempt {}/{})",
-                             identifier, attempt, max_retries
-                         ));
-                         error!("{}", parse_err); // Log the parsing error
-                         last_error = Some(parse_err);
-                         // Don't retry on parse errors, likely indicates bad data or API change
-                         break;
-                     }
-                 };
-
-                // --- Start of existing processing logic ---
-                // Helper function to extract the first string from a Value (string or array)
+            // Attempt to parse the successful response
+            match response.json::<ItemMetadataResponse>().await {
+                Ok(raw_details) => {
+                    // --- Start of existing processing logic ---
+                    // Helper function to extract the first string from a Value (string or array)
                 let get_first_string = |v: &Option<serde_json::Value>| -> Option<String> {
                     match v {
                         Some(serde_json::Value::String(s)) => Some(s.clone()),
@@ -388,30 +424,41 @@ pub async fn fetch_item_details(
                 };
 
                 info!("Successfully processed item details for identifier: {}", identifier);
-                return Ok(details); // Success, return the processed details
-                // --- End of existing processing logic ---
-            }
-            Err(e) => {
-                // Error sending the request (network issue, timeout, etc.)
-                let current_err = anyhow!(e).context(format!(
-                    "Failed to send item details request for '{}' (Attempt {}/{})",
-                    identifier, attempt, max_retries
-                ));
-                error!("{}", current_err); // Log the specific error for this attempt
-                last_error = Some(current_err);
-
-                if attempt < max_retries {
-                    // Wait before retrying (e.g., exponential backoff)
-                    let delay_secs = 1 << (attempt - 1); // 1s, 2s
-                    warn!("Retrying in {} seconds...", delay_secs);
-                    sleep(TokioDuration::from_secs(delay_secs)).await;
+                    info!("Successfully processed item details for identifier: {}", identifier);
+                    Ok(details) // Success, return the processed details
+                    // --- End of existing processing logic ---
+                }
+                Err(e) => {
+                    // Failed to parse JSON even from a successful HTTP response
+                    let err = anyhow!(e).context("Failed to parse JSON response for item details");
+                    error!("{} for identifier '{}'", err, identifier);
+                    Err(FetchDetailsError {
+                        kind: FetchDetailsErrorKind::ParseError,
+                        source: err,
+                        identifier: identifier.to_string(),
+                    })
                 }
             }
         }
+        Err(e) => {
+            // Error sending the request (network issue, timeout, etc.)
+            let err = anyhow!(e).context("Failed to send item details request");
+            error!("{} for identifier '{}'", err, identifier);
+            // Classify network errors
+            let kind = if e.is_timeout() {
+                FetchDetailsErrorKind::NetworkError // Specifically timeout
+            } else if e.is_connect() || e.is_request() {
+                 FetchDetailsErrorKind::NetworkError // Other connection/request errors
+            } else {
+                 FetchDetailsErrorKind::Other // Other reqwest errors
+            };
+             Err(FetchDetailsError {
+                kind,
+                source: err,
+                identifier: identifier.to_string(),
+            })
+        }
     }
-
-    // If all retries failed, return the last error encountered
-    Err(last_error.unwrap_or_else(|| anyhow!("Item details request failed after {} attempts for '{}'", max_retries, identifier)))
 }
 
 
@@ -492,10 +539,9 @@ pub async fn fetch_all_collection_identifiers(
 mod tests {
     use super::*;
     use crate::app::AppRateLimiter; // Use the type alias
-    use governor::{Quota, RateLimiter, clock::SystemClock}; // Import governor items for tests, including SystemClock
-    // Removed unused nonzero_ext import
+    use governor::{Quota, RateLimiter, clock::SystemClock};
     use reqwest::Client;
-    use std::{sync::Arc, time::Duration, num::NonZeroU32}; // Import Arc, Duration, NonZeroU32
+    use std::{sync::Arc, time::Duration, num::NonZeroU32};
     use tokio;
 
     // Helper function to create a client with timeouts for tests
@@ -604,11 +650,19 @@ mod tests {
         let identifier = "enrmp270_litmus_-_perception_of_light";
         let limiter = test_limiter(); // Create dummy limiter
 
+        let limiter = test_limiter(); // Create dummy limiter
+
         // Act
         let result = fetch_item_details(&client, identifier, limiter).await;
 
         // Assert
-        assert!(result.is_ok(), "API call should succeed: {:?}", result.err());
+        if let Err(ref e) = result {
+             eprintln!("Fetch details error: {}", e); // Print error details if it fails
+             if let Some(source) = e.source() {
+                 eprintln!("Source: {}", source);
+             }
+        }
+        assert!(result.is_ok(), "API call should succeed");
         let details = result.unwrap();
 
         assert_eq!(details.identifier, identifier);
@@ -639,14 +693,11 @@ mod tests {
         let result = fetch_item_details(&client, identifier, limiter).await;
 
         // Assert
-        // The metadata API often returns 200 OK with empty/null data for non-existent items.
-        // So, we expect Ok, but the details should reflect that it wasn't really found.
-        assert!(result.is_ok(), "API call should succeed even for non-existent item, returning empty data");
-        let details = result.unwrap();
-        assert_eq!(details.identifier, identifier, "Identifier should match the request");
-        // A key indicator of a non-found item is often a missing title or empty files list.
-        assert!(details.title.is_none(), "Non-existent item should not have a title");
-        assert!(details.files.is_empty(), "Non-existent item should have no files");
+        // The metadata API should now return a specific error for 404.
+        assert!(result.is_err(), "API call should fail for non-existent item");
+        let err = result.unwrap_err();
+        assert!(matches!(err.kind, FetchDetailsErrorKind::NotFound), "Error kind should be NotFound");
+        assert_eq!(err.identifier, identifier, "Error should contain the correct identifier");
     }
 
     // Removed test_fetch_item_details_integration_minimal_metadata as it used an invalid identifier

@@ -531,20 +531,57 @@ async fn download_item(
     info!("Starting download_item: collection='{}', item='{}', mode='{:?}'", collection_str, item_id, mode);
     let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
 
-    // Fetch item details first to get the file list (pass limiter)
-    let limiter_clone_details = Arc::clone(&rate_limiter);
-    let details = match archive_api::fetch_item_details(client, item_id, limiter_clone_details).await {
-        Ok(d) => d,
-        Err(e) => {
-            error!("Failed to fetch item details for '{}': {}. Skipping item download.", item_id, e);
-            let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to get details for {}: {}", item_id, e))).await;
-            let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), false)).await; // Mark as failed
-            return Err(e).context(format!("Failed fetching details for item '{}'", item_id));
-        }
-    };
+    // --- Fetch item details with retry logic ---
+    let mut details: Option<ItemDetails> = None;
+    let mut attempt = 0;
+    let mut backoff_secs = 1; // Initial backoff delay
+    const MAX_BACKOFF_SECS: u64 = 60 * 10; // Cap backoff at 10 minutes
 
-     let total_files = details.files.len();
-     info!("Found {} files for item '{}'", total_files, item_id);
+    loop {
+        attempt += 1;
+        let limiter_clone_details = Arc::clone(&rate_limiter);
+        let details_result = archive_api::fetch_item_details(client, item_id, limiter_clone_details).await;
+
+        match details_result {
+            Ok(fetched_details) => {
+                info!("Successfully fetched details for item '{}' on attempt {}", item_id, attempt);
+                details = Some(fetched__details);
+                break; // Exit loop on success
+            }
+            Err(e) => {
+                // Check if the error is permanent
+                match e.kind {
+                    archive_api::FetchDetailsErrorKind::NotFound |
+                    archive_api::FetchDetailsErrorKind::ParseError |
+                    archive_api::FetchDetailsErrorKind::ClientError(_) => {
+                        error!("Permanent error fetching details for item '{}': {}. Skipping item.", item_id, e);
+                        let _ = progress_tx.send(DownloadProgress::Error(format!("Permanent error for {}: {}", item_id, e.kind))).await;
+                        let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), false)).await; // Mark as failed
+                        // Return Ok because the download_item task itself didn't panic, it just handled a permanent item error.
+                        return Ok(());
+                    }
+                    // Otherwise, it's a transient error, proceed with retry logic
+                    _ => {
+                        warn!("Transient error fetching details for item '{}' (Attempt {}): {}. Retrying in {}s...", item_id, attempt, e, backoff_secs);
+                        let _ = progress_tx.send(DownloadProgress::Status(format!("Retrying {} (Attempt {}, Wait {}s): {:?}", item_id, attempt, backoff_secs, e.kind))).await;
+
+                        // Wait for backoff duration
+                        tokio::time::sleep(TokioDuration::from_secs(backoff_secs)).await;
+
+                        // Increase backoff for next attempt, capped
+                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                    }
+                }
+            }
+        }
+        // Loop continues only if it was a transient error
+    } // --- End fetch details retry loop ---
+
+    // If we break the loop, details must be Some
+    let details = details.expect("Details should be Some after successful fetch loop");
+
+    let total_files = details.files.len();
+    info!("Found {} files for item '{}'", total_files, item_id);
      let _ = progress_tx.send(DownloadProgress::ItemFileCount(total_files)).await;
 
 
