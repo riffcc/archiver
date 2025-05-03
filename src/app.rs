@@ -197,6 +197,7 @@ impl App {
             cursor_position: 0, // Initialize cursor for editing setting / asking dir
             add_collection_input: String::new(), // Initialize add collection input
             add_collection_cursor_pos: 0, // Initialize add collection cursor
+            rate_limiter, // Store the passed rate limiter
         }
     }
 

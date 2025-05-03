@@ -158,11 +158,19 @@ pub async fn fetch_item_details(client: &Client, identifier: &str) -> Result<Ite
     let max_retries = 3;
     let mut last_error: Option<anyhow::Error> = None;
 
-    for attempt in 1..=max_retries {
-        debug!("Requesting item details from URL: {} (Attempt {}/{})", url, attempt, max_retries);
-        match client.get(&url).send().await {
-            Ok(response) => {
-                if !response.status().is_success() {
+   for attempt in 1..=max_retries {
+       debug!("Requesting item details from URL: {} (Attempt {}/{})", url, attempt, max_retries);
+
+       // --- Wait for Rate Limiter ---
+       // Wait *before* each attempt, including retries
+       debug!("Waiting for rate limit permit for item details: {}", identifier);
+       rate_limiter.until_ready().await;
+       debug!("Acquired rate limit permit for item details: {}", identifier);
+       // --- Rate Limit Permit Acquired ---
+
+       match client.get(&url).send().await {
+           Ok(response) => {
+               if !response.status().is_success() {
                     let status = response.status();
                     // Log non-success status but proceed to parse, as API might return OK with empty data for not found
                     warn!(
@@ -338,15 +346,18 @@ pub async fn fetch_all_collection_identifiers(
     let mut total_found = 0;
     let mut fetched_count = 0;
 
-    loop {
-        let (docs, page_total_found) = fetch_collection_items(
-            client,
-            collection_name,
-            ROWS_PER_PAGE,
-            current_page,
-        )
-        .await
-        .context(format!(
+   loop {
+       // Clone limiter for each page fetch
+       let limiter_clone = Arc::clone(&rate_limiter);
+       let (docs, page_total_found) = fetch_collection_items(
+           client,
+           collection_name,
+           ROWS_PER_PAGE,
+           current_page,
+           limiter_clone, // Pass limiter
+       )
+       .await
+       .context(format!(
             "Failed to fetch page {} for collection '{}'",
             current_page, collection_name
         ))?;

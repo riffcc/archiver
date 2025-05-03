@@ -9,9 +9,12 @@ use rust_tui_app::{
     update::update,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use governor::{Quota, RateLimiter, Jitter, state::keyed::DefaultKeyedRateLimiter, clock::DefaultClock, state::direct::NotKeyed}; // Rate Limiting
+use governor::middleware::NoOpMiddleware; // Rate Limiting
+use nonzero_ext::nonzero; // For Quota::per_minute
 use reqwest::Client;
 use simplelog::{Config, WriteLogger, LevelFilter}; // Import necessary simplelog items
-use std::{fs::File, io, path::Path, sync::Arc, time::Instant}; // Add File, Path
+use std::{fs::File, io, num::NonZeroU32, path::Path, sync::Arc, time::Instant}; // Add NonZeroU32, File, Path
 use tokio::sync::{mpsc, Semaphore};
 /// Fails if the log file cannot be created or written to.
 fn initialize_logging() -> Result<()> {
@@ -59,8 +62,16 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Create an application and load settings into it.
-    let mut app = App::new();
+    // --- Rate Limiter Setup ---
+    // Allow 15 requests per minute. Use Arc for sharing.
+    // Using DefaultClock, NotKeyed state store, and NoOpMiddleware.
+    let quota = Quota::per_minute(NonZeroU32::new(15).unwrap());
+    let rate_limiter: Arc<RateLimiter<NotKeyed, governor::state::direct::InMemoryState, DefaultClock, NoOpMiddleware<Instant>>> =
+        Arc::new(RateLimiter::direct(quota));
+
+
+    // Create an application, load settings, and pass the rate limiter.
+    let mut app = App::new(Arc::clone(&rate_limiter));
     app.load_settings(settings);
 
     // Create a channel for collection search API results (now returns tuple)
@@ -113,10 +124,11 @@ async fn main() -> Result<()> {
 
                                     let client = app.client.clone();
                                     let tx = collection_api_tx.clone();
+                                    let limiter_clone = Arc::clone(&rate_limiter); // Clone limiter for task
                                     // Spawn task to fetch items for the specific collection
                                     tokio::spawn(async move {
                                         // TODO: Add pagination support later (rows=50, page=1 for now)
-                                        let result = archive_api::fetch_collection_items(&client, &collection_name, 50, 1).await;
+                                        let result = archive_api::fetch_collection_items(&client, &collection_name, 50, 1, limiter_clone).await;
                                         let _ = tx.send(result).await;
                                     });
                                 }
@@ -126,10 +138,11 @@ async fn main() -> Result<()> {
                                     if let Some(identifier) = app.viewing_item_id.clone() {
                                         let client = app.client.clone();
                                         let tx = item_details_tx.clone();
+                                        let limiter_clone = Arc::clone(&rate_limiter); // Clone limiter for task
                                         app.error_message = None;
                                         app.download_status = None;
                                         tokio::spawn(async move {
-                                            let result = archive_api::fetch_item_details(&client, &identifier).await;
+                                            let result = archive_api::fetch_item_details(&client, &identifier, limiter_clone).await;
                                             let _ = tx.send(result).await;
                                         });
                                     } else {
@@ -159,6 +172,7 @@ async fn main() -> Result<()> {
                                         let base_dir_clone = base_dir.clone();
                                         let progress_tx_clone = download_progress_tx.clone();
                                         let semaphore_clone = Arc::clone(&semaphore); // File download semaphore
+                                        let limiter_clone = Arc::clone(&rate_limiter); // Clone rate limiter
                                         let download_mode = app.settings.download_mode; // Get current download mode
                                         // Clone the current collection name *before* spawning the task
                                         let current_collection_name_clone = app.current_collection_name.clone();
@@ -167,19 +181,19 @@ async fn main() -> Result<()> {
                                         tokio::spawn(async move {
                                             let result = match download_action {
                                                 DownloadAction::ItemAllFiles(item_id) => {
-                                                    // Pass semaphore AND mode down
+                                                    // Pass semaphore, mode, AND limiter down
                                                     // Pass the captured collection name
-                                                    download_item(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, download_mode, progress_tx_clone.clone(), semaphore_clone).await
+                                                    download_item(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, download_mode, progress_tx_clone.clone(), semaphore_clone, limiter_clone).await
                                                 }
                                                 DownloadAction::File(item_id, file) => {
-                                                    // Pass semaphore down
+                                                    // Pass semaphore AND limiter down
                                                     // Mode doesn't apply here, always download the specific file
                                                     // Pass the captured collection name
-                                                    download_single_file(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, &file, progress_tx_clone.clone(), semaphore_clone).await
+                                                    download_single_file(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, &file, progress_tx_clone.clone(), semaphore_clone, limiter_clone).await
                                                 }
                                                 DownloadAction::Collection(collection_id) => {
-                                                     // Pass semaphore AND mode down, collection context is provided by download_collection itself
-                                                     download_collection(&client_clone, &base_dir_clone, &collection_id, download_mode, progress_tx_clone.clone(), semaphore_clone).await
+                                                     // Pass semaphore, mode, AND limiter down, collection context is provided by download_collection itself
+                                                     download_collection(&client_clone, &base_dir_clone, &collection_id, download_mode, progress_tx_clone.clone(), semaphore_clone, limiter_clone).await
                                                 }
                                             };
 
@@ -351,6 +365,7 @@ async fn download_single_file(
     file_details: &archive_api::FileDetails,
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>,
+    rate_limiter: Arc<RateLimiter<NotKeyed, governor::state::direct::InMemoryState, DefaultClock, NoOpMiddleware<Instant>>>, // Added rate limiter
 ) -> Result<()> {
     let collection_str = collection_id.unwrap_or("<none>");
     info!("Starting download_single_file: collection='{}', item='{}', file='{}'",
@@ -403,6 +418,13 @@ async fn download_single_file(
     let _permit = semaphore.acquire_owned().await.context("Failed to acquire download semaphore permit")?;
     debug!("Acquired download permit for file: {}", file_details.name);
     // --- Permit Acquired ---
+
+
+    // --- Wait for Rate Limiter ---
+    debug!("Waiting for rate limit permit for file: {}", file_details.name);
+    rate_limiter.until_ready().await;
+    debug!("Acquired rate limit permit for file: {}", file_details.name);
+    // --- Rate Limit Permit Acquired ---
 
 
     // Log unknown size warning if necessary
@@ -490,13 +512,15 @@ async fn download_item(
     mode: DownloadMode, // Added: Download mode
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>,
+    rate_limiter: Arc<RateLimiter<NotKeyed, governor::state::direct::InMemoryState, DefaultClock, NoOpMiddleware<Instant>>>, // Added rate limiter
 ) -> Result<()> {
     let collection_str = collection_id.unwrap_or("<none>");
     info!("Starting download_item: collection='{}', item='{}', mode='{:?}'", collection_str, item_id, mode);
     let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
 
-    // Fetch item details first to get the file list
-    let details = match archive_api::fetch_item_details(client, item_id).await {
+    // Fetch item details first to get the file list (pass limiter)
+    let limiter_clone_details = Arc::clone(&rate_limiter);
+    let details = match archive_api::fetch_item_details(client, item_id, limiter_clone_details).await {
         Ok(d) => d,
         Err(e) => {
             error!("Failed to fetch item details for '{}': {}. Skipping item download.", item_id, e);
@@ -542,6 +566,7 @@ async fn download_item(
              let item_id_clone = item_id.to_string();
              let progress_tx_clone = progress_tx.clone();
              let semaphore_clone = Arc::clone(&semaphore);
+             let limiter_clone_torrent = Arc::clone(&rate_limiter); // Clone limiter for torrent download
              let torrent_clone = torrent.clone(); // Clone the FileDetails
              let collection_id_task_clone = collection_id.map(|s| s.to_string());
 
@@ -554,6 +579,7 @@ async fn download_item(
                      &torrent_clone, // Pass the torrent file details
                      progress_tx_clone,
                      semaphore_clone,
+                     limiter_clone_torrent, // Pass limiter
                  )
                  .await
              });
@@ -614,6 +640,7 @@ async fn download_item(
          let item_id_clone = item_id.to_string();
          let progress_tx_clone = progress_tx.clone();
          let semaphore_clone = Arc::clone(&semaphore);
+         let limiter_clone_file = Arc::clone(&rate_limiter); // Clone limiter for file download
          let file_clone = file.clone();
          // Clone collection_id for the task (as Option<String>)
          let collection_id_task_clone = collection_id.map(|s| s.to_string());
@@ -629,6 +656,7 @@ async fn download_item(
                  &file_clone,
                  progress_tx_clone,
                  semaphore_clone,
+                 limiter_clone_file, // Pass limiter
              )
              .await
          });
@@ -673,12 +701,14 @@ async fn download_collection(
     mode: DownloadMode, // Added: Download mode
     progress_tx: mpsc::Sender<DownloadProgress>,
     semaphore: Arc<Semaphore>, // File download semaphore
+    rate_limiter: Arc<RateLimiter<NotKeyed, governor::state::direct::InMemoryState, DefaultClock, NoOpMiddleware<Instant>>>, // Added rate limiter
 ) -> Result<()> {
     info!("Starting download_collection for '{}', mode: {:?}", collection_id, mode);
     let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers for: {}", collection_id))).await;
 
-    // --- Fetch ALL identifiers for the specified collection ---
-    let all_identifiers = match archive_api::fetch_all_collection_identifiers(client, collection_id).await {
+    // --- Fetch ALL identifiers for the specified collection (pass limiter) ---
+    let limiter_clone_ids = Arc::clone(&rate_limiter);
+    let all_identifiers = match archive_api::fetch_all_collection_identifiers(client, collection_id, limiter_clone_ids).await {
         Ok(ids) => ids,
         Err(e) => {
             error!("Failed to fetch identifiers for collection '{}': {}", collection_id, e);
@@ -713,6 +743,7 @@ async fn download_collection(
         let base_dir_clone = base_dir.to_string();
         let progress_tx_clone = progress_tx.clone();
         let semaphore_clone = Arc::clone(&semaphore); // Pass file semaphore down
+        let limiter_clone_item = Arc::clone(&rate_limiter); // Clone limiter for item download
         let item_id_clone = item_id.clone(); // Keep clone for task
         let collection_id_clone = collection_id.to_string(); // Clone collection ID for task
 
@@ -727,6 +758,7 @@ async fn download_collection(
                 mode, // Pass the download mode down
                 progress_tx_clone.clone(),
                 semaphore_clone, // Pass file semaphore
+                limiter_clone_item, // Pass limiter
             )
             .await;
             item_result // Return result (Ok or Err)

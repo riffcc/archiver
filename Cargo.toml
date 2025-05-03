@@ -21,6 +21,7 @@ toml = "0.8.13" # Added for settings serialization
 chrono = { version = "0.4.38", features = ["serde"] } # Added for date/time parsing
 log = "0.4.22" # Logging facade
 simplelog = "0.12.2" # Simple logger implementation
+governor = { version = "0.6", features = ["std", "jitter", "middleware-futures"] } # For rate limiting
 
 
 [dev-dependencies]
