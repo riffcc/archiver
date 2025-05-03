@@ -160,18 +160,22 @@ async fn main() -> Result<()> {
                                         let progress_tx_clone = download_progress_tx.clone();
                                         let semaphore_clone = Arc::clone(&semaphore); // File download semaphore
                                         let download_mode = app.settings.download_mode; // Get current download mode
+                                        // Clone the current collection name *before* spawning the task
+                                        let current_collection_name_clone = app.current_collection_name.clone();
 
                                         // Spawn the download task
                                         tokio::spawn(async move {
                                             let result = match download_action {
                                                 DownloadAction::ItemAllFiles(item_id) => {
-                                                    // Pass semaphore AND mode down, no collection context for single item download
-                                                    download_item(&client_clone, &base_dir_clone, None, &item_id, download_mode, progress_tx_clone.clone(), semaphore_clone).await
+                                                    // Pass semaphore AND mode down
+                                                    // Pass the captured collection name
+                                                    download_item(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, download_mode, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::File(item_id, file) => {
-                                                    // Pass semaphore down, no collection context for single file download
+                                                    // Pass semaphore down
                                                     // Mode doesn't apply here, always download the specific file
-                                                    download_single_file(&client_clone, &base_dir_clone, None, &item_id, &file, progress_tx_clone.clone(), semaphore_clone).await
+                                                    // Pass the captured collection name
+                                                    download_single_file(&client_clone, &base_dir_clone, current_collection_name_clone.as_deref(), &item_id, &file, progress_tx_clone.clone(), semaphore_clone).await
                                                 }
                                                 DownloadAction::Collection(collection_id) => {
                                                      // Pass semaphore AND mode down, collection context is provided by download_collection itself
