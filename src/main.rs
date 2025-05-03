@@ -10,39 +10,34 @@ use rust_tui_app::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use reqwest::Client;
-use simplelog::{CombinedLogger, Config, TermLogger, WriteLogger, TerminalMode, ColorChoice}; // Import simplelog items
+use simplelog::{Config, WriteLogger, LevelFilter}; // Import necessary simplelog items
 use std::{fs::File, io, path::Path, sync::Arc, time::Instant}; // Add File, Path
 use tokio::sync::{mpsc, Semaphore};
-/// Initializes the logger. Logs to `/var/log/riffarchiver.log`.
-/// Falls back to terminal logging if file logging fails.
+/// Fails if the log file cannot be created or written to.
 fn initialize_logging() -> Result<()> {
     let log_path = Path::new("/var/log/riffarchiver.log");
 
     // Attempt to create/open the log file
-    let log_file_result = File::create(log_path);
-
-    match log_file_result {
+    match File::create(log_path) {
         Ok(log_file) => {
-            CombinedLogger::init(vec![
-                // Log INFO level and above to the file
-                WriteLogger::new(LevelFilter::Info, Config::default(), log_file),
-                // Log WARN level and above to the terminal
-                TermLogger::new(LevelFilter::Warn, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
-            ])?;
+            // Initialize ONLY the file logger. Use LevelFilter::Info or adjust as needed.
+            WriteLogger::init(LevelFilter::Info, Config::default(), log_file)
+                .context(format!("Failed to initialize file logger at {}", log_path.display()))?;
+            // Log initialization success *after* successful initialization
             info!("File logging initialized successfully to: {}", log_path.display());
+            Ok(())
         }
         Err(e) => {
-            // If file logging fails, fall back to terminal-only logging
-            TermLogger::init(LevelFilter::Info, Config::default(), TerminalMode::Mixed, ColorChoice::Auto)?;
-            warn!(
-                "Failed to create/open log file at '{}': {}. Falling back to terminal logging.",
+            // If file creation fails, return an error immediately.
+            // No logging is possible here via simplelog if the logger isn't initialized.
+            // The error will be propagated back to main and printed there before TUI starts.
+            Err(anyhow!(
+                "Failed to create/open log file at '{}': {}. Ensure the directory exists and the application has write permissions.",
                 log_path.display(),
                 e
-            );
-            warn!("Ensure the directory exists and the application has write permissions.");
+            ))
         }
     }
-    Ok(())
 }
 
 
