@@ -128,8 +128,8 @@ fn handle_collections_pane_input(app: &mut App, key_event: KeyEvent) {
                         app.item_list_state.select(None);
                         app.total_items_found = None;
                         app.is_loading = true; // Set loading flag for network fetch
-                        // Dispatch the action to start incremental fetching
-                        app.pending_action = Some(UpdateAction::StartIncrementalItemFetch(collection_name.clone()));
+                        // Dispatch the action to start bulk fetching
+                        app.pending_action = Some(UpdateAction::StartBulkItemFetch(collection_name.clone()));
                     }
                 }
                 // Always switch focus to items pane after attempting load or starting fetch
@@ -605,11 +605,13 @@ mod tests {
 
         let action = update(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert!(action.is_some());
-        // Use the correct action variant StartIncrementalItemFetch
-        assert!(matches!(action, Some(UpdateAction::StartIncrementalItemFetch(ref name)) if name == "coll2"));
+        // Note: This test assumes cache miss. If cache existed, action would be None.
+        // TODO: Add a test case where cache *does* exist.
+        assert!(action.is_some(), "Expected an action when cache misses");
+        // Use the correct action variant StartBulkItemFetch
+        assert!(matches!(action, Some(UpdateAction::StartBulkItemFetch(ref name)) if name == "coll2"), "Action should be StartBulkItemFetch for 'coll2'");
         assert_eq!(app.current_collection_name, Some("coll2".to_string()));
-        assert!(app.items.is_empty()); // Items cleared
+        assert!(app.items.is_empty()); // Items cleared before fetch
         assert!(app.item_list_state.selected().is_none()); // Item selection reset
         assert!(app.is_loading); // Loading flag set
         assert_eq!(app.active_pane, ActivePane::Items); // Focus switched to items pane

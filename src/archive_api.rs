@@ -1,27 +1,37 @@
-use anyhow::{anyhow, Result}; // Removed Context
+use anyhow::{anyhow, Context, Result}; // Added Context back
 use log::{debug, error, info, warn}; // Import log macros
 use reqwest::{Client, StatusCode}; // Import StatusCode
 use serde::{Deserialize, Serialize}; // Added Serialize
 use std::{collections::HashMap, sync::Arc};
-use tokio::{sync::mpsc, time::{sleep, Duration as TokioDuration}}; // Import mpsc, sleep and Tokio Duration for retries
+// Removed mpsc import as FetchAllResult is removed
+use tokio::time::{sleep, Duration as TokioDuration}; // Import sleep and Tokio Duration for retries
 use crate::app::AppRateLimiter; // Use the type alias from app.rs
 
 const ADVANCED_SEARCH_URL: &str = "https://archive.org/advancedsearch.php";
 const METADATA_URL_BASE: &str = "https://archive.org/metadata/";
 
+// --- Structs for Bulk Search API (JSONP response) ---
+
+/// Outer structure for the JSONP response (trimmed).
 #[derive(Deserialize, Debug)]
-struct ArchiveSearchResponse {
-    response: ResponseContent,
+struct JsonpResponseWrapper {
+    // responseHeader isn't strictly needed but good for completeness
+    // #[serde(rename = "responseHeader")]
+    // response_header: serde_json::Value,
+    response: JsonpResponseContent,
 }
 
+/// Inner 'response' object within the JSONP structure.
 #[derive(Deserialize, Debug)]
-#[allow(dead_code)] // Allow unused fields for now (num_found, start)
-struct ResponseContent {
-    #[serde(rename = "numFound")] // Map JSON field to snake_case
+struct JsonpResponseContent {
+    #[serde(rename = "numFound")]
     num_found: usize,
     start: usize,
     docs: Vec<ArchiveDoc>,
 }
+
+
+// --- Structs for Item List and Details ---
 
 #[derive(Deserialize, Serialize, Debug, Clone)] // Added Serialize
 pub struct ArchiveDoc {
@@ -141,87 +151,115 @@ impl std::error::Error for FetchDetailsError {
     }
 }
 
-
 // --- Constants ---
-const ROWS_PER_PAGE: usize = 8000; // Number of results to fetch per API call during pagination
+// Removed ROWS_PER_PAGE
+const BULK_ROWS: usize = 1_000_000; // Fetch up to 1 million rows in one go
+const MAX_FETCH_RETRIES: u32 = 3; // Max retries for network/server errors
 
 // --- API Fetch Functions ---
 
-/// Fetches item identifiers for a given collection name from Archive.org.
+/// Fetches ALL item identifiers for a given collection name from Archive.org in a single bulk request.
 ///
-/// Uses the advanced search API.
-pub async fn fetch_collection_items(
+/// Uses the advanced search API with JSONP output format and trims the wrapper.
+pub async fn fetch_collection_items_bulk(
     client: &Client,
     collection_name: &str,
-    rows: usize, // Number of results per page
-    page: usize, // Page number (1-based)
     rate_limiter: AppRateLimiter, // Added rate limiter parameter
 ) -> Result<(Vec<ArchiveDoc>, usize)> {
-    info!("Fetching collection items for '{}', page {}, rows {}", collection_name, page, rows);
-    let query = format!("collection:{}", collection_name);
-    let max_retries = 3;
+    info!("Fetching collection items BULK for '{}', rows {}", collection_name, BULK_ROWS);
+    let query = format!("collection:\"{}\"", collection_name); // Ensure collection name is quoted
     let mut last_error: Option<anyhow::Error> = None;
 
-    for attempt in 1..=max_retries {
-        debug!("Attempting to fetch collection items for '{}', page {}, attempt {}/{}", collection_name, page, attempt, max_retries);
+    for attempt in 1..=MAX_FETCH_RETRIES {
+        debug!("Attempting bulk fetch for '{}', attempt {}/{}", collection_name, attempt, MAX_FETCH_RETRIES);
 
         // --- Wait for Rate Limiter (inside retry loop) ---
-        debug!("Waiting for rate limit permit for collection items: {} (page {})", collection_name, page);
+        debug!("Waiting for rate limit permit for bulk collection items: {}", collection_name);
         rate_limiter.until_ready().await;
-        debug!("Acquired rate limit permit for collection items: {} (page {})", collection_name, page);
+        debug!("Acquired rate limit permit for bulk collection items: {}", collection_name);
         // --- Rate Limit Permit Acquired ---
 
-        // Clone the request builder inside the loop for retries
+        // Construct request builder inside the loop for retries
         let request_builder = client
             .get(ADVANCED_SEARCH_URL)
             .query(&[
                 ("q", query.as_str()),
-                ("fl[]", "identifier"), // Request only the identifier field for the list
-                // Add other fields to fl[] if needed later, e.g., "title"
-                ("rows", &rows.to_string()),
-                ("page", &page.to_string()), // Note: API might use 'start' instead of 'page' depending on endpoint version/preference
+                ("fl[]", "identifier"), // Request only the identifier field
+                ("rows", &BULK_ROWS.to_string()),
                 ("output", "json"),
+                ("callback", "callback"), // Use the JSONP callback parameter
+                // ("page", "1"), // Page/start usually not needed with huge rows, but API might require it? Test without first.
             ]);
 
-        debug!("Sending collection items request: {:?}", request_builder);
+        debug!("Sending bulk collection items request: {:?}", request_builder);
 
-        match request_builder.try_clone() { // Need to clone the builder for potential retries
+        match request_builder.try_clone() {
             Some(cloned_builder) => {
                 match cloned_builder.send().await {
                     Ok(response) => {
-                        if response.status().is_success() {
-                            // Success path
-                            match response.json::<ArchiveSearchResponse>().await {
-                                Ok(search_result) => {
-                                    info!("Successfully fetched {} items (total found: {}) for collection '{}', page {}",
-                                          search_result.response.docs.len(), search_result.response.num_found, collection_name, page);
-                                    return Ok((search_result.response.docs, search_result.response.num_found));
+                        let status = response.status();
+                        if status.is_success() {
+                            // Read the body as text first to handle JSONP wrapper
+                            match response.text().await {
+                                Ok(body_text) => {
+                                    // Trim the "callback(" prefix and ")" suffix
+                                    let trimmed_body = body_text
+                                        .strip_prefix("callback(")
+                                        .and_then(|s| s.strip_suffix(')'))
+                                        .unwrap_or(&body_text); // Fallback to original text if trimming fails
+
+                                    // Parse the trimmed JSON
+                                    match serde_json::from_str::<JsonpResponseWrapper>(trimmed_body) {
+                                        Ok(parsed_jsonp) => {
+                                            let docs = parsed_jsonp.response.docs;
+                                            let total_found = parsed_jsonp.response.num_found;
+                                            info!("Successfully fetched BULK {} items (total reported: {}) for collection '{}'",
+                                                  docs.len(), total_found, collection_name);
+                                            // Basic sanity check
+                                            if docs.len() > total_found {
+                                                warn!("Fetched more items ({}) than reported total ({}) for collection '{}'. Using fetched count.", docs.len(), total_found, collection_name);
+                                                // Optionally return docs.len() as the total? Or stick with reported total?
+                                                // Let's return the actual docs and the reported total for now.
+                                            }
+                                            return Ok((docs, total_found));
+                                        }
+                                        Err(e) => {
+                                            let parse_err = anyhow!(e).context(format!(
+                                                "Failed to parse trimmed JSONP response for bulk collection items '{}' (Attempt {}/{})",
+                                                collection_name, attempt, MAX_FETCH_RETRIES
+                                            ));
+                                            error!("Trimmed Body: '{}'", trimmed_body); // Log the body that failed parsing
+                                            error!("{}", parse_err);
+                                            last_error = Some(parse_err);
+                                            // Don't retry on parse errors
+                                            break;
+                                        }
+                                    }
                                 }
                                 Err(e) => {
-                                    let parse_err = anyhow!(e).context(format!(
-                                        "Failed to parse JSON for collection items '{}', page {} (Attempt {}/{})",
-                                        collection_name, page, attempt, max_retries
+                                    let body_err = anyhow!(e).context(format!(
+                                        "Failed to read response body for bulk collection items '{}' (Attempt {}/{})",
+                                        collection_name, attempt, MAX_FETCH_RETRIES
                                     ));
-                                    error!("{}", parse_err);
-                                    last_error = Some(parse_err);
-                                    // Don't retry on parse errors
+                                    error!("{}", body_err);
+                                    last_error = Some(body_err);
+                                    // Don't retry if reading body fails
                                     break;
                                 }
                             }
                         } else {
                             // Handle non-success HTTP status
-                            let status = response.status();
                             let err_msg = format!(
-                                "Collection items API request failed for '{}', page {} with status: {} (Attempt {}/{})",
-                                collection_name, page, status, attempt, max_retries
+                                "Bulk collection items API request failed for '{}' with status: {} (Attempt {}/{})",
+                                collection_name, status, attempt, MAX_FETCH_RETRIES
                             );
                             error!("{}", err_msg);
                             last_error = Some(anyhow!(err_msg));
 
                             // Retry only on server errors (5xx) or specific transient errors if needed
-                            if status.is_server_error() && attempt < max_retries {
-                                let delay_secs = 1 << (attempt - 1); // 1s, 2s
-                                warn!("Retrying collection items fetch in {} seconds...", delay_secs);
+                            if status.is_server_error() && attempt < MAX_FETCH_RETRIES {
+                                let delay_secs = 1 << (attempt - 1); // Exponential backoff: 1s, 2s
+                                warn!("Retrying bulk collection items fetch in {} seconds...", delay_secs);
                                 sleep(TokioDuration::from_secs(delay_secs)).await;
                                 continue; // Go to next attempt
                             } else {
@@ -233,15 +271,15 @@ pub async fn fetch_collection_items(
                     Err(e) => {
                         // Handle request sending errors (network, timeout, etc.)
                         let current_err = anyhow!(e).context(format!(
-                            "Failed to send collection items request for '{}', page {} (Attempt {}/{})",
-                            collection_name, page, attempt, max_retries
+                            "Failed to send bulk collection items request for '{}' (Attempt {}/{})",
+                            collection_name, attempt, MAX_FETCH_RETRIES
                         ));
                         error!("{}", current_err);
                         last_error = Some(current_err);
 
-                        if attempt < max_retries {
-                            let delay_secs = 1 << (attempt - 1); // 1s, 2s
-                            warn!("Retrying collection items fetch in {} seconds...", delay_secs);
+                        if attempt < MAX_FETCH_RETRIES {
+                            let delay_secs = 1 << (attempt - 1); // Exponential backoff: 1s, 2s
+                            warn!("Retrying bulk collection items fetch in {} seconds...", delay_secs);
                             sleep(TokioDuration::from_secs(delay_secs)).await;
                             continue; // Go to next attempt
                         } else {
@@ -252,7 +290,7 @@ pub async fn fetch_collection_items(
             }
             None => {
                 // Should not happen with standard reqwest builders
-                let build_err = anyhow!("Failed to clone request builder for collection items '{}', page {}", collection_name, page);
+                let build_err = anyhow!("Failed to clone request builder for bulk collection items '{}'", collection_name);
                 error!("{}", build_err);
                 last_error = Some(build_err);
                 break; // Cannot retry if builder cannot be cloned
@@ -261,11 +299,11 @@ pub async fn fetch_collection_items(
     } // End retry loop
 
     // If loop finished without returning Ok, return the last error
-    Err(last_error.unwrap_or_else(|| anyhow!("Collection items request failed after {} attempts for '{}', page {}", max_retries, collection_name, page)))
+    Err(last_error.unwrap_or_else(|| anyhow!("Bulk collection items request failed after {} attempts for '{}'", MAX_FETCH_RETRIES, collection_name)))
 }
 
 
-/// Fetches detailed metadata and file list for a given item identifier, with retries.
+/// Fetches detailed metadata and file list for a given item identifier.
 /// Fetches detailed metadata and file list for a given item identifier.
 /// Returns `FetchDetailsError` on failure, classifying the error type.
 pub async fn fetch_item_details(
@@ -476,119 +514,13 @@ pub async fn fetch_item_details(
             })
         }
     }
-}
-
-/// Represents messages sent back from the incremental fetch task.
-#[derive(Debug)]
-pub enum FetchAllResult {
-    /// The total number of items found (sent once from the first page).
-    TotalItems(usize),
-    /// A batch of items fetched from a page.
-    Items(Vec<ArchiveDoc>),
-    /// An error occurred during fetching.
-    Error(String),
-}
-
-
-/// Fetches ALL item identifiers for a given collection using pagination, sending results incrementally.
-///
-/// Sends `FetchAllResult` messages through the provided sender.
-/// Closes the sender when done or on fatal error.
-pub async fn fetch_all_collection_items_incremental(
-    client: &Client,
-    collection_name: &str,
-    rate_limiter: AppRateLimiter,
-    sender: mpsc::Sender<FetchAllResult>, // Sender for incremental results
-) {
-    info!("Starting incremental fetch for collection: {}", collection_name);
-    let mut current_page = 1;
-    let mut total_found: Option<usize> = None; // Use Option to track if first page total was sent
-    let mut fetched_count = 0;
-
-    loop {
-        // Clone limiter for each page fetch
-        let limiter_clone = Arc::clone(&rate_limiter);
-        let fetch_result = fetch_collection_items(
-            client,
-            collection_name,
-            ROWS_PER_PAGE,
-            current_page,
-            limiter_clone,
-        )
-        .await;
-
-        match fetch_result {
-            Ok((docs, page_total_found)) => {
-                debug!("Fetched page {} for collection '{}'. Found {} docs on page, total reported: {}",
-                       current_page, collection_name, docs.len(), page_total_found);
-
-                // Send total_found on the first successful page fetch
-                if total_found.is_none() {
-                    total_found = Some(page_total_found);
-                    info!("Total items reported for collection '{}': {}", collection_name, page_total_found);
-                    if sender.send(FetchAllResult::TotalItems(page_total_found)).await.is_err() {
-                        warn!("Receiver dropped while sending total items for collection '{}'. Aborting fetch.", collection_name);
-                        return; // Exit if receiver is gone
-                    }
-                } else if total_found != Some(page_total_found) {
-                    warn!(
-                        "Total items found changed between page 1 ({:?}) and page {} ({}) for collection '{}'. Using first page total.",
-                        total_found, current_page, page_total_found, collection_name
-                    );
-                    // Continue using the total_found from the first page.
-                }
-
-                let num_docs_on_page = docs.len();
-                fetched_count += num_docs_on_page;
-
-                // Send the batch of items if not empty
-                if !docs.is_empty() {
-                    if sender.send(FetchAllResult::Items(docs)).await.is_err() {
-                         warn!("Receiver dropped while sending items for collection '{}'. Aborting fetch.", collection_name);
-                         return; // Exit if receiver is gone
-                    }
-                }
-
-                // Check termination conditions using the total_found established on page 1:
-                // 1. If total_found is Some(0), stop immediately.
-                // 2. If the number of docs received on this page is less than requested, it must be the last page.
-                // 3. If we have fetched at least as many items as the total reported, we are done.
-                let current_total = total_found.unwrap_or(0); // Use 0 if total_found is still None (shouldn't happen after page 1 unless error)
-                if current_total == 0 || num_docs_on_page < ROWS_PER_PAGE || fetched_count >= current_total {
-                    break; // Finished successfully
-                }
-
-                // Prepare for the next page
-                current_page += 1;
-
-                // Optional: Add a small delay between requests to be polite to the API
-                // tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            Err(e) => {
-                let error_msg = format!(
-                    "Failed to fetch page {} for collection '{}': {}",
-                    current_page, collection_name, e
-                );
-                error!("{}", error_msg);
-                // Send error message and terminate
-                let _ = sender.send(FetchAllResult::Error(error_msg)).await; // Ignore error if receiver is already gone
-                return; // Exit on error
-            }
-        }
-    } // End loop
-
-    info!("Finished incremental fetch for collection '{}'. Found {} items.", collection_name, fetched_count);
-    if let Some(total) = total_found {
-         if total > 0 && fetched_count != total {
-            warn!("Fetched item count ({}) does not match reported total ({}) for collection '{}'.", fetched_count, total, collection_name);
-        }
-    }
-    // Sender is automatically dropped when this function returns, signaling completion.
-}
+// Removed FetchAllResult enum and fetch_all_collection_items_incremental function
 
 
 #[cfg(test)]
 mod tests {
+    // Note: Tests for fetch_collection_items and fetch_all_collection_items_incremental
+    // need to be removed or adapted for fetch_collection_items_bulk.
     use super::*;
     use crate::app::AppRateLimiter; // Use the type alias
     use governor::{Quota, RateLimiter, clock::SystemClock};
@@ -615,84 +547,52 @@ mod tests {
 
     // --- Integration Tests (require network access to archive.org) ---
 
-    // --- fetch_collection_items tests ---
+    // --- fetch_collection_items_bulk tests ---
     #[tokio::test]
     #[ignore] // Ignored by default, run with `cargo test -- --ignored`
-    async fn test_fetch_collection_items_integration_success() {
+    async fn test_fetch_collection_items_bulk_integration_success() {
         // Arrange
-        let client = test_client(); // Use helper function
-        let collection_name = "nasa"; // A known, large collection
-        let rows = 5; // Fetch a small number of rows
-        let page = 1;
-        let limiter = test_limiter(); // Create dummy limiter
+        let client = test_client();
+        let collection_name = "78rpm"; // A known, large collection
+        let limiter = test_limiter();
 
         // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page, Arc::clone(&limiter)).await;
+        let result = fetch_collection_items_bulk(&client, collection_name, Arc::clone(&limiter)).await;
 
         // Assert
-        assert!(result.is_ok(), "API call should succeed");
-        let (items, total_found) = result.unwrap(); // Destructure the tuple
-        assert!(total_found > 0, "Total found should be greater than 0 for 'nasa'");
-        assert!(!items.is_empty(), "Should return some items for 'nasa'");
-        assert!(items.len() <= rows, "Should return at most 'rows' items"); // API might return fewer than requested if less available
+        assert!(result.is_ok(), "Bulk API call should succeed. Error: {:?}", result.err());
+        let (items, total_found) = result.unwrap();
+        assert!(total_found > 10000, "Total found should be large for '78rpm' (found {})", total_found);
+        assert!(!items.is_empty(), "Should return items for '78rpm'");
+        // Check if the number of items fetched is close to the total reported
+        // Allow some difference as the total might fluctuate slightly or BULK_ROWS might be smaller
+        let diff = (total_found as isize - items.len() as isize).abs();
+        assert!(diff < 100 || items.len() >= BULK_ROWS,
+                "Fetched items ({}) should be close to total ({}) or limited by BULK_ROWS ({}) for '{}'",
+                items.len(), total_found, BULK_ROWS, collection_name);
         assert!(items.iter().all(|doc| !doc.identifier.is_empty()), "All items should have an identifier");
-
-        // Fetch page 2 and check if identifiers are different (basic pagination check)
-        let page2_result = fetch_collection_items(&client, collection_name, rows, page + 1, Arc::clone(&limiter)).await;
-        assert!(page2_result.is_ok(), "API call for page 2 should succeed");
-        let (page2_items, page2_total_found) = page2_result.unwrap(); // Destructure page 2 result
-        assert_eq!(total_found, page2_total_found, "Total found should be consistent across pages");
-        assert!(!page2_items.is_empty(), "Page 2 should also return items for 'nasa'");
-        if !items.is_empty() && !page2_items.is_empty() {
-             assert_ne!(items[0].identifier, page2_items[0].identifier, "First item of page 1 and page 2 should differ");
-        }
     }
 
     #[tokio::test]
     #[ignore] // Ignored by default, run with `cargo test -- --ignored`
-    async fn test_fetch_collection_items_integration_not_found() {
+    async fn test_fetch_collection_items_bulk_integration_not_found() {
         // Arrange
-        let client = test_client(); // Use helper function
-        // Use a collection name highly unlikely to exist
+        let client = test_client();
         let collection_name = "this_collection_should_really_not_exist_12345";
-        let rows = 10;
-        let page = 1;
-        let limiter = test_limiter(); // Create dummy limiter
+        let limiter = test_limiter();
 
         // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page, limiter).await;
+        let result = fetch_collection_items_bulk(&client, collection_name, limiter).await;
 
         // Assert
-        assert!(result.is_ok(), "API call should still succeed even if no items are found");
-        let (items, total_found) = result.unwrap(); // Destructure
+        // The API call itself might succeed but return 0 results.
+        assert!(result.is_ok(), "Bulk API call should succeed even for non-existent collection. Error: {:?}", result.err());
+        let (items, total_found) = result.unwrap();
         assert_eq!(total_found, 0, "Total found should be 0 for non-existent collection");
         assert!(items.is_empty(), "Should return no items for a non-existent collection");
     }
 
-     #[tokio::test]
-    #[ignore] // Ignored by default, run with `cargo test -- --ignored`
-    async fn test_fetch_collection_items_integration_invalid_chars() {
-        // Arrange
-        let client = test_client(); // Use helper function
-        // Archive.org might handle this gracefully, but good to test
-        let collection_name = "invalid collection name with spaces";
-        let rows = 10;
-        let page = 1;
-        let limiter = test_limiter(); // Create dummy limiter
-
-        // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page, limiter).await;
-
-        // Assert
-        // We expect the API call to succeed but return no results for such a name
-        assert!(result.is_ok(), "API call should succeed");
-        let (items, total_found) = result.unwrap(); // Destructure
-        assert_eq!(total_found, 0, "Total found should be 0 for invalid collection name");
-        assert!(items.is_empty(), "Should return no items for an invalid collection name format");
-    }
-
-    // --- fetch_item_details tests ---
-
+    // --- fetch_item_details tests (remain unchanged) ---
     #[tokio::test]
     #[ignore]
     async fn test_fetch_item_details_integration_success() {
@@ -791,6 +691,6 @@ mod tests {
         let (_items, total_found) = result.unwrap();
         assert_eq!(total_found, 0, "Total found should be 0 for non-existent collection");
     }
-}
 
-// Removed default implementation for MetadataDetails
+    // Removed test_fetch_collection_items_total_found_nasa and nonexistent as bulk fetch covers this
+}

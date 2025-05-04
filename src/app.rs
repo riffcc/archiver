@@ -120,8 +120,8 @@ pub struct App {
 /// Actions that the main loop should perform based on user input or events.
 #[derive(Clone, Debug)]
 pub enum UpdateAction {
-    /// Start fetching items incrementally for a collection identifier.
-    StartIncrementalItemFetch(String),
+    /// Start fetching all items for a collection identifier in bulk.
+    StartBulkItemFetch(String),
     /// Fetch details for the currently selected item.
     FetchItemDetails,
     /// Start a download operation.
@@ -536,21 +536,15 @@ impl App {
     }
 
 
-    /// Appends newly fetched items to the list and saves the entire list to the cache file.
+    /// Replaces the current item list with the provided one and saves it to the cache file.
     /// The cache path is constructed as `$download_dir/.item_cache/$collection_name.json`.
     /// Returns `Ok(())` on success, or an `anyhow::Error` if saving fails or prerequisites are missing.
-    pub fn append_and_save_items(&mut self, new_items: Vec<ArchiveDoc>) -> Result<()> {
-        log::debug!("Attempting to append and save items. New items count: {}", new_items.len());
+    pub fn set_and_save_items(&mut self, new_items: Vec<ArchiveDoc>) -> Result<()> {
+        log::debug!("Attempting to set and save items. New items count: {}", new_items.len());
 
-        // 1. Append items to the internal list
-        let new_total = self.items.len() + new_items.len();
-        self.items.extend(new_items);
-        log::debug!("Items appended. Total items now: {}", self.items.len());
-        // Basic check after append
-        if self.items.len() != new_total {
-             log::warn!("Item count mismatch after appending. Expected {}, got {}", new_total, self.items.len());
-        }
-
+        // 1. Replace the internal list
+        self.items = new_items;
+        log::debug!("Items list replaced. Total items now: {}", self.items.len());
 
         // 2. Get necessary components for the path
         log::debug!("Checking prerequisites for saving item cache...");

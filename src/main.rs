@@ -76,8 +76,8 @@ async fn main() -> Result<()> {
     let mut app = App::new(Arc::clone(&rate_limiter));
     app.load_settings(settings);
 
-    // Create a channel for incremental item fetch results
-    let (item_fetch_tx, mut item_fetch_rx) = mpsc::channel::<FetchAllResult>(10); // Buffer size 10 for batches
+    // Create a channel for bulk item fetch results (replaces incremental channel)
+    let (bulk_fetch_tx, mut bulk_fetch_rx) = mpsc::channel::<Result<(Vec<ArchiveDoc>, usize)>>(1); // Buffer size 1
     // Create a channel for item details API results
     let (item_details_tx, mut item_details_rx) = mpsc::channel::<Result<ItemDetails, archive_api::FetchDetailsError>>(1);
     // Create a channel for download progress updates
@@ -124,8 +124,8 @@ async fn main() -> Result<()> {
                         // Handle input and check if an action is requested
                         if let Some(action) = update(&mut app, key_event) {
                             match action {
-                                UpdateAction::StartIncrementalItemFetch(collection_name) => {
-                                    // Triggered when selecting a collection in update()
+                                UpdateAction::StartBulkItemFetch(collection_name) => { // Renamed action
+                                    // Triggered when selecting a collection in update() and cache misses
                                     // State (is_loading, items cleared, etc.) should be set by update()
                                     app.error_message = None; // Clear previous errors
                                     app.download_status = None; // Clear status
@@ -140,18 +140,20 @@ async fn main() -> Result<()> {
                                     }
 
                                     let client = app.client.clone();
-                                    let tx = item_fetch_tx.clone(); // Use the new channel sender
+                                    let tx = bulk_fetch_tx.clone(); // Use the bulk channel sender
                                     let limiter_clone = Arc::clone(&rate_limiter);
-                                    // Spawn the incremental fetch task
+                                    // Spawn the bulk fetch task
                                     tokio::spawn(async move {
-                                        archive_api::fetch_all_collection_items_incremental(
+                                        let result = archive_api::fetch_collection_items_bulk(
                                             &client,
                                             &collection_name,
                                             limiter_clone,
-                                            tx, // Pass the sender
                                         )
                                         .await;
-                                        // Task finishes when sender is dropped inside the function
+                                        // Send the single result (Ok or Err) back
+                                        if tx.send(result).await.is_err() {
+                                            warn!("Bulk fetch receiver dropped for collection '{}'.", collection_name);
+                                        }
                                     });
                                 }
                                 UpdateAction::FetchItemDetails => {
@@ -250,46 +252,40 @@ async fn main() -> Result<()> {
                     Event::Resize(_, _) => {} // Terminal handles resize redraw automatically
                 }
             }
-            // Handle incremental item fetch results
-            result = item_fetch_rx.recv() => { // Use Option pattern for channel close
+            // Handle bulk item fetch results
+            Some(result) = bulk_fetch_rx.recv() => {
+                app.is_loading = false; // Fetch finished (successfully or not)
                 match result {
-                    Some(FetchAllResult::TotalItems(count)) => {
-                        app.total_items_found = Some(count);
-                        // Maybe update status bar?
-                    }
-                    Some(FetchAllResult::Items(batch)) => {
-                        let was_empty = app.items.is_empty();
-                        // Append and save the batch
-                        if let Err(e) = app.append_and_save_items(batch) {
-                            let err_msg = format!("Error saving item cache: {}", e);
-                            error!("{}", err_msg);
-                            app.error_message = Some(err_msg);
-                            // Consider stopping the fetch? For now, continue receiving but show error.
-                            app.is_loading = false; // Stop loading indicator on save error
+                    Ok((items, total_found)) => {
+                        info!("Received {} items (total reported: {}) from bulk fetch.", items.len(), total_found);
+                        app.total_items_found = Some(total_found); // Store reported total
+                        let was_empty = app.items.is_empty(); // Check before setting new items
+
+                        // Set items and save to cache
+                        if let Err(e) = app.set_and_save_items(items) {
+                             let err_msg = format!("Error saving item cache after bulk fetch: {}", e);
+                             error!("{}", err_msg);
+                             app.error_message = Some(err_msg);
                         } else {
-                            // Select first item only if the list *was* empty before this batch
+                            // Select first item only if the list *was* empty before this fetch
+                            // and the new list is not empty.
                             if was_empty && !app.items.is_empty() {
                                 app.item_list_state.select(Some(0));
+                            } else if app.items.is_empty() {
+                                // Ensure selection is cleared if fetch returned no items
+                                app.item_list_state.select(None);
                             }
+                            // Clear error on successful fetch and save
+                            app.error_message = None;
                         }
                     }
-                    Some(FetchAllResult::Error(msg)) => {
-                        error!("Item fetch error: {}", msg);
-                        app.error_message = Some(format!("Item fetch error: {}", msg));
-                        app.is_loading = false; // Stop loading indicator
-                    }
-                    None => {
-                        // Channel closed, fetch is complete (or aborted)
-                        info!("Item fetch channel closed.");
-                        app.is_loading = false; // Ensure loading indicator is off
-                        // Check if total found matches items length if needed
-                        if let Some(total) = app.total_items_found {
-                            if total != app.items.len() {
-                                warn!("Final item count ({}) differs from reported total ({})", app.items.len(), total);
-                                // Optionally update total_items_found to match actual count
-                                // app.total_items_found = Some(app.items.len());
-                            }
-                        }
+                    Err(e) => {
+                        let err_msg = format!("Bulk item fetch failed: {}", e);
+                        error!("{}", err_msg);
+                        app.error_message = Some(err_msg);
+                        app.items.clear(); // Clear items on fetch error
+                        app.item_list_state.select(None);
+                        app.total_items_found = None;
                     }
                 }
             }
@@ -835,52 +831,32 @@ async fn download_collection(
         info!("Fetching identifiers from API for collection: {}", collection_id);
         let _ = progress_tx.send(DownloadProgress::Status(format!("Fetching identifiers from API: {}", collection_id))).await;
 
-        // --- Use incremental fetch to get identifiers ---
-        let (temp_fetch_tx, mut temp_fetch_rx) = mpsc::channel::<FetchAllResult>(10);
+        // --- Use bulk fetch to get identifiers ---
+        // No temporary channel needed here, call directly
         let client_clone_ids = client.clone();
-        let collection_id_clone_ids = collection_id.to_string();
+        let collection_id_clone_ids = collection_id.to_string(); // Keep clone for error messages
         let limiter_clone_ids = Arc::clone(&rate_limiter);
 
-        tokio::spawn(async move {
-            archive_api::fetch_all_collection_items_incremental(
-                &client_clone_ids,
-                &collection_id_clone_ids,
-                limiter_clone_ids,
-                temp_fetch_tx,
-            )
-            .await;
-        });
-
-        let mut fetched_items: Vec<ArchiveDoc> = Vec::new();
-        let mut fetch_error: Option<String> = None;
-
-        while let Some(result) = temp_fetch_rx.recv().await {
-            match result {
-                FetchAllResult::Items(batch) => {
-                    fetched_items.extend(batch);
-                }
-                FetchAllResult::Error(msg) => {
-                    error!("Error during identifier fetch for collection '{}': {}", collection_id, msg);
-                    fetch_error = Some(msg);
-                    break; // Stop receiving on error
-                }
-                FetchAllResult::TotalItems(_) => {
-                    // Ignore total count here, we just need the identifiers
-                }
+        // Call the bulk fetch function directly
+        match archive_api::fetch_collection_items_bulk(&client_clone_ids, collection_id, limiter_clone_ids).await {
+            Ok((fetched_items, _total_found)) => {
+                 // Extract identifiers from fetched items
+                 all_identifiers = fetched_items.into_iter().map(|doc| doc.identifier).collect();
+                 info!("Fetched {} identifiers via bulk API for collection '{}'", all_identifiers.len(), collection_id);
+            }
+            Err(e) => {
+                 // Propagate error if fetch failed
+                 let err_msg = format!("Failed to get identifiers for {}: {}", collection_id_clone_ids, e);
+                 error!("{}", err_msg);
+                 let _ = progress_tx.send(DownloadProgress::Error(err_msg.clone())).await;
+                 let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
+                 return Err(anyhow!(err_msg)); // Return the error
             }
         }
-        // --- End incremental fetch ---
+        // --- End bulk fetch ---
 
-        if let Some(err_msg) = fetch_error {
-            // Propagate error if fetch failed
-            let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to get identifiers for {}: {}", collection_id, err_msg))).await;
-            let _ = progress_tx.send(DownloadProgress::CollectionCompleted(0, 0)).await;
-            return Err(anyhow!("Failed fetching identifiers for collection '{}': {}", collection_id, err_msg));
-        } else {
-            // Extract identifiers from fetched items
-            all_identifiers = fetched_items.into_iter().map(|doc| doc.identifier).collect();
-
-            // 3. Save fetched identifiers to cache
+        // 3. Save fetched identifiers to cache (only if fetch was successful)
+        if !all_identifiers.is_empty() {
             if !all_identifiers.is_empty() {
                     match serde_json::to_string_pretty(&all_identifiers) {
                         Ok(json_data) => {
