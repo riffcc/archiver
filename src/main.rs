@@ -609,6 +609,31 @@ async fn download_item(
         debug!("Ensuring torrent parent directory exists: {}", torrent_parent_dir.display());
         fs::create_dir_all(&torrent_parent_dir).await.context(format!("Failed to create torrent parent directory '{}'", torrent_parent_dir.display()))?;
 
+        // --- Idempotency Check for Torrent File ---
+        let torrent_file_path = torrent_parent_dir.join(&torrent_file_details.name);
+        match fs::metadata(&torrent_file_path).await {
+            Ok(metadata) if metadata.is_file() => {
+                info!("Skipping existing torrent file: '{}'", torrent_file_path.display());
+                let _ = progress_tx.send(DownloadProgress::Status(format!("Skipping (exists): {}", torrent_file_details.name))).await;
+                // Send ItemCompleted as we successfully handled this item (by skipping)
+                let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), true)).await;
+                return Ok(()); // File exists, skip download attempt
+            }
+            Ok(_) => {
+                // Path exists but is not a file (e.g., a directory) - proceed to download/overwrite?
+                // Or log a warning? For now, proceed.
+                warn!("Path exists but is not a file: '{}'. Proceeding with download.", torrent_file_path.display());
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // File does not exist, proceed with download
+                debug!("Torrent file not found: '{}'. Proceeding with download.", torrent_file_path.display());
+            }
+            Err(e) => {
+                // Other error checking metadata, log warning and proceed
+                warn!("Failed to get metadata for torrent file '{}': {}. Proceeding with download.", torrent_file_path.display(), e);
+            }
+        }
+        // --- End Idempotency Check ---
 
         // Spawn a single task to download the assumed torrent file
         let client_clone = client.clone();
