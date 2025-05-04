@@ -538,7 +538,7 @@ mod tests {
     // Helper function to create a client with timeouts for tests
     fn test_client() -> Client {
         Client::builder()
-            .timeout(Duration::from_secs(300)) // Increased timeout to 300s (5 minutes)
+            .timeout(Duration::from_secs(1800)) // Increased timeout to 1800s (30 minutes) for potentially large test fetches
             .connect_timeout(Duration::from_secs(60)) // Keep connect timeout reasonable
             .build()
             .expect("Failed to build test client")
