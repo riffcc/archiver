@@ -573,9 +573,9 @@ async fn download_item(
         let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing torrent file for item: {}", item_id))).await;
         let _ = progress_tx.send(DownloadProgress::ItemFileCount(1)).await; // Only 1 file to download
 
-        // Construct the expected torrent file details
+        // Construct the expected torrent file details using the new format
         let torrent_file_details = archive_api::FileDetails {
-            name: format!("{}.torrent", item_id),
+            name: format!("{}_archive.torrent", item_id), // Use _archive.torrent format
             source: None,
             format: Some("Torrent".to_string()), // Indicate format if known
             size: None, // Size is unknown without fetching metadata
