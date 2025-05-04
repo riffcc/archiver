@@ -420,12 +420,30 @@ async fn download_single_file(
     info!("Starting download_single_file: collection='{}', item='{}', file='{}'",
           collection_str, item_id, file_details.name);
 
-    // --- Idempotency Check ---
-    // Construct path based on whether collection_id is present
-    let file_path = match collection_id {
-        Some(c) => Path::new(base_dir).join(c).join(item_id).join(&file_details.name),
-        None => Path::new(base_dir).join(item_id).join(&file_details.name),
+    // --- Idempotency Check & Path Construction ---
+    // Construct path based on whether collection_id is present and if it's a torrent file
+    let file_path = if file_details.name.ends_with("_archive.torrent") { // Check for the specific suffix
+        // Special path for torrent files: base_dir / collection_id / item_id_archive.torrent
+        match collection_id {
+            Some(c) => Path::new(base_dir).join(c).join(format!("{}_archive.torrent", item_id)), // Use _archive.torrent format
+            // If no collection context, maybe place in base_dir? Or error?
+            // For now, assume torrent downloads happen within a collection context.
+            // If collection_id is None, this will likely cause issues later if triggered.
+            None => {
+                warn!("Attempting to download torrent file '{}' for item '{}' without collection context. Placing in base directory.", file_details.name, item_id);
+                Path::new(base_dir).join(format!("{}_archive.torrent", item_id)) // Use _archive.torrent format
+                // Alternatively, return an error:
+                // return Err(anyhow!("Cannot determine torrent download path without collection context for item '{}'", item_id));
+            }
+        }
+    } else {
+        // Standard path for other files: base_dir / [collection_id] / item_id / filename
+        match collection_id {
+            Some(c) => Path::new(base_dir).join(c).join(item_id).join(&file_details.name),
+            None => Path::new(base_dir).join(item_id).join(&file_details.name),
+        }
     };
+
     let expected_size_str = file_details.size.as_deref();
     let expected_size: Option<u64> = expected_size_str.and_then(|s| s.parse().ok());
 
