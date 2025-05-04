@@ -558,165 +558,151 @@ async fn download_item(
     info!("Starting download_item: collection='{}', item='{}', mode='{:?}'", collection_str, item_id, mode);
     let _ = progress_tx.send(DownloadProgress::ItemStarted(item_id.to_string())).await;
 
-    // --- Fetch item details with retry logic ---
-    // Initialize details directly inside the loop or after successful fetch
-    // let mut details: Option<ItemDetails> = None; // Remove initial assignment
-    let details: ItemDetails; // Declare details, assign on success
-    let mut attempt = 0;
-    let mut backoff_secs = 1; // Initial backoff delay
-    const MAX_BACKOFF_SECS: u64 = 60 * 10; // Cap backoff at 10 minutes
+    // --- Mode-Specific Logic ---
+    if mode == DownloadMode::TorrentOnly {
+        info!("TorrentOnly mode: Attempting direct download of {}.torrent", item_id);
+        let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing torrent file for item: {}", item_id))).await;
+        let _ = progress_tx.send(DownloadProgress::ItemFileCount(1)).await; // Only 1 file to download
 
-    loop {
-        attempt += 1;
-        let limiter_clone_details = Arc::clone(&rate_limiter);
-        let details_result = archive_api::fetch_item_details(client, item_id, limiter_clone_details).await;
+        // Construct the expected torrent file details
+        let torrent_file_details = archive_api::FileDetails {
+            name: format!("{}.torrent", item_id),
+            source: None,
+            format: Some("Torrent".to_string()), // Indicate format if known
+            size: None, // Size is unknown without fetching metadata
+            md5: None,
+        };
 
-        match details_result {
-            Ok(fetched_details) => {
-                info!("Successfully fetched details for item '{}' on attempt {}", item_id, attempt);
-                details = fetched_details; // Assign directly on success
-                break; // Exit loop on success
+        // Ensure the parent directory for the torrent file exists
+        // Path: base_dir / collection_id / item_id.torrent -> Parent: base_dir / collection_id
+        let torrent_parent_dir = match collection_id {
+            Some(c) => Path::new(base_dir).join(c),
+            None => Path::new(base_dir).to_path_buf(), // Place directly in base if no collection?
+        };
+        debug!("Ensuring torrent parent directory exists: {}", torrent_parent_dir.display());
+        fs::create_dir_all(&torrent_parent_dir).await.context(format!("Failed to create torrent parent directory '{}'", torrent_parent_dir.display()))?;
+
+
+        // Spawn a single task to download the assumed torrent file
+        let client_clone = client.clone();
+        let base_dir_clone = base_dir.to_string();
+        let item_id_clone = item_id.to_string();
+        let progress_tx_clone = progress_tx.clone();
+        let file_semaphore_clone = Arc::clone(&file_semaphore);
+        let limiter_clone_torrent = Arc::clone(&rate_limiter);
+        let collection_id_task_clone = collection_id.map(|s| s.to_string());
+
+        let handle = tokio::spawn(async move {
+            download_single_file(
+                &client_clone,
+                &base_dir_clone,
+                collection_id_task_clone.as_deref(),
+                &item_id_clone,
+                &torrent_file_details, // Pass the constructed details
+                progress_tx_clone,
+                file_semaphore_clone,
+                limiter_clone_torrent,
+            )
+            .await
+        });
+
+        // Wait for the single torrent download task
+        let torrent_result = handle.await;
+        let item_success = match torrent_result {
+            Ok(Ok(_)) => {
+                debug!("Assumed torrent download task completed successfully for item '{}'.", item_id);
+                true
             }
-            Err(e) => {
-                // Check if the error is permanent
-                match e.kind {
-                    archive_api::FetchDetailsErrorKind::NotFound |
-                    archive_api::FetchDetailsErrorKind::ParseError |
-                    archive_api::FetchDetailsErrorKind::ClientError(_) => {
-                        error!("Permanent error fetching details for item '{}': {}. Skipping item.", item_id, e);
-                        // Use Debug format {:?} for e.kind
-                        let _ = progress_tx.send(DownloadProgress::Error(format!("Permanent error for {}: {:?}", item_id, e.kind))).await;
-                        let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), false)).await; // Mark as failed
-                        // Return Ok because the download_item task itself didn't panic, it just handled a permanent item error.
-                        return Ok(());
-                    }
-                    // Otherwise, it's a transient error, proceed with retry logic
-                    _ => {
-                        warn!("Transient error fetching details for item '{}' (Attempt {}): {}. Retrying in {}s...", item_id, attempt, e, backoff_secs);
-                        // Use Debug format {:?} for e.kind
-                        let _ = progress_tx.send(DownloadProgress::Status(format!("Retrying {} (Attempt {}, Wait {}s): {:?}", item_id, attempt, backoff_secs, e.kind))).await;
+            Ok(Err(e)) => {
+                error!("Assumed torrent download task failed for item {}: {}", item_id, e);
+                // Send specific error if download failed (e.g., 404 Not Found)
+                let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to download assumed torrent for {}: {}", item_id, e))).await;
+                false
+            }
+            Err(e) => { // Task panicked
+                error!("Assumed torrent download task panicked for item {}: {}", item_id, e);
+                let _ = progress_tx.send(DownloadProgress::Error(format!("Torrent download task panicked for item {}: {}", item_id, e))).await;
+                false
+            }
+        };
 
-                        // Wait for backoff duration (Use imported Duration)
-                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+        info!("Finished processing item '{}' (TorrentOnly mode - direct attempt). Success: {}", item_id, item_success);
+        let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), item_success)).await;
+        return Ok(()); // Finished processing this item in TorrentOnly mode
 
-                        // Increase backoff for next attempt, capped
-                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+    } else { // Direct Mode
+        // --- Fetch item details with retry logic (Only for Direct mode) ---
+        let details: ItemDetails; // Declare details, assign on success
+        let mut attempt = 0;
+        let mut backoff_secs = 1; // Initial backoff delay
+        const MAX_BACKOFF_SECS: u64 = 60 * 10; // Cap backoff at 10 minutes
+
+        loop {
+            attempt += 1;
+            let limiter_clone_details = Arc::clone(&rate_limiter);
+            let details_result = archive_api::fetch_item_details(client, item_id, limiter_clone_details).await;
+
+            match details_result {
+                Ok(fetched_details) => {
+                    info!("Successfully fetched details for item '{}' on attempt {}", item_id, attempt);
+                    details = fetched_details; // Assign directly on success
+                    break; // Exit loop on success
+                }
+                Err(e) => {
+                    // Check if the error is permanent
+                    match e.kind {
+                        archive_api::FetchDetailsErrorKind::NotFound |
+                        archive_api::FetchDetailsErrorKind::ParseError |
+                        archive_api::FetchDetailsErrorKind::ClientError(_) => {
+                            error!("Permanent error fetching details for item '{}': {}. Skipping item.", item_id, e);
+                            let _ = progress_tx.send(DownloadProgress::Error(format!("Permanent error for {}: {:?}", item_id, e.kind))).await;
+                            let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), false)).await; // Mark as failed
+                            return Ok(()); // Handled permanent item error
+                        }
+                        // Otherwise, it's a transient error, proceed with retry logic
+                        _ => {
+                            warn!("Transient error fetching details for item '{}' (Attempt {}): {}. Retrying in {}s...", item_id, attempt, e, backoff_secs);
+                            let _ = progress_tx.send(DownloadProgress::Status(format!("Retrying {} (Attempt {}, Wait {}s): {:?}", item_id, attempt, backoff_secs, e.kind))).await;
+                            tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                            backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                        }
                     }
                 }
             }
+        } // --- End fetch details retry loop ---
+
+        let total_files = details.files.len();
+        info!("Direct mode: Found {} files for item '{}'", total_files, item_id);
+        let _ = progress_tx.send(DownloadProgress::ItemFileCount(total_files)).await;
+
+        if details.files.is_empty() {
+            info!("No files found for item: {}. Marking as complete.", item_id);
+            let _ = progress_tx.send(DownloadProgress::Status(format!("No files found for item: {}", item_id))).await;
+            let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), true)).await;
+            return Ok(());
         }
-        // Loop continues only if it was a transient error
-    } // --- End fetch details retry loop ---
 
-    // 'details' is now guaranteed to be initialized if the loop breaks successfully
+        info!("Direct mode: Queueing {} files for item: {}", total_files, item_id);
+        let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} files for item: {}", total_files, item_id))).await;
 
-    let total_files = details.files.len();
-    info!("Found {} files for item '{}'", total_files, item_id);
-     let _ = progress_tx.send(DownloadProgress::ItemFileCount(total_files)).await;
-
-
-     if details.files.is_empty() {
-         info!("No files found for item: {}. Marking as complete.", item_id);
-         let _ = progress_tx.send(DownloadProgress::Status(format!("No files found for item: {}", item_id))).await;
-         let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), true)).await; // Mark as completed (successfully, with 0 files)
-         return Ok(());
-     }
-
-     // --- Mode-Specific Logic ---
-     if mode == DownloadMode::TorrentOnly {
-         // Find the .torrent file
-         let torrent_file = details.files.iter().find(|f| f.name.ends_with(".torrent"));
-
-         if let Some(torrent) = torrent_file {
-             info!("TorrentOnly mode: Found torrent file '{}' for item '{}'", torrent.name, item_id);
-             let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing torrent file for item: {}", item_id))).await;
-             let _ = progress_tx.send(DownloadProgress::ItemFileCount(1)).await; // Only 1 file to download
-
-             // Create directory: base_dir / [collection_id] / item_id
-             let item_dir = match collection_id {
-                Some(c) => Path::new(base_dir).join(c).join(item_id),
-                None => Path::new(base_dir).join(item_id),
-             };
-             debug!("Ensuring item directory exists: {}", item_dir.display());
-             fs::create_dir_all(&item_dir).await.context(format!("Failed to create item directory '{}'", item_dir.display()))?;
-
-             // Spawn a single task to download the torrent file
-             let client_clone = client.clone();
-             let base_dir_clone = base_dir.to_string();
-             let item_id_clone = item_id.to_string();
-             let progress_tx_clone = progress_tx.clone();
-             let file_semaphore_clone = Arc::clone(&file_semaphore); // Use renamed semaphore
-             let limiter_clone_torrent = Arc::clone(&rate_limiter); // Clone limiter for torrent download
-             let torrent_clone = torrent.clone(); // Clone the FileDetails
-             let collection_id_task_clone = collection_id.map(|s| s.to_string());
-
-             let handle = tokio::spawn(async move {
-                 download_single_file(
-                     &client_clone,
-                     &base_dir_clone,
-                     collection_id_task_clone.as_deref(),
-                     &item_id_clone,
-                     &torrent_clone, // Pass the torrent file details
-                     progress_tx_clone,
-                     file_semaphore_clone, // Pass renamed semaphore
-                     limiter_clone_torrent, // Pass limiter
-                 )
-                 .await
-             });
-
-             // Wait for the single torrent download task
-             let torrent_result = handle.await;
-             let item_success = match torrent_result {
-                 Ok(Ok(_)) => {
-                     debug!("Torrent download task completed successfully for item '{}'.", item_id);
-                     true
-                 }
-                 Ok(Err(e)) => {
-                     error!("Torrent download task failed within item {}: {}", item_id, e);
-                     false
-                 }
-                 Err(e) => { // Task panicked
-                     error!("Torrent download task panicked for item {}: {}", item_id, e);
-                     let _ = progress_tx.send(DownloadProgress::Error(format!("Torrent download task panicked for item {}: {}", item_id, e))).await;
-                     false
-                 }
-             };
-
-             info!("Finished processing item '{}' (TorrentOnly mode). Success: {}", item_id, item_success);
-             let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), item_success)).await;
-             return Ok(()); // Finished processing this item in TorrentOnly mode
-
-         } else {
-             // Torrent file not found
-             warn!("TorrentOnly mode: No .torrent file found for item '{}'. Skipping.", item_id);
-             let _ = progress_tx.send(DownloadProgress::Status(format!("No .torrent file found for item: {}", item_id))).await;
-             let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), false)).await; // Mark as failed (no torrent)
-             // Return Ok because the *item processing* didn't fail, just couldn't find the torrent
-             return Ok(());
-         }
-     }
-     // --- End Mode-Specific Logic (Direct mode continues below) ---
+        // For Direct mode, ensure the item-specific directory exists, as files (other than torrents) go there.
+        // Path: base_dir / [collection_id] / item_id
+        let item_dir = match collection_id {
+            Some(c) => Path::new(base_dir).join(c).join(item_id),
+            None => Path::new(base_dir).join(item_id),
+        };
+        debug!("Ensuring item directory exists for non-torrent files: {}", item_dir.display());
+        fs::create_dir_all(&item_dir).await.context(format!("Failed to create item directory '{}'", item_dir.display()))?;
 
 
-     info!("Direct mode: Queueing {} files for item: {}", total_files, item_id);
-     let _ = progress_tx.send(DownloadProgress::Status(format!("Queueing {} files for item: {}", total_files, item_id))).await;
+        let mut file_join_handles = vec![];
+        let mut item_failed = false; // Track if any file task fails
 
-     // Create directory: base_dir / [collection_id] / item_id
-     let item_dir = match collection_id {
-        Some(c) => Path::new(base_dir).join(c).join(item_id),
-        None => Path::new(base_dir).join(item_id),
-     };
-     debug!("Ensuring item directory exists: {}", item_dir.display());
-     fs::create_dir_all(&item_dir).await.context(format!("Failed to create item directory '{}'", item_dir.display()))?;
-
-     let mut file_join_handles = vec![];
-     let mut item_failed = false; // Track if any file task fails
-
-     // Spawn a download task for each file concurrently
-     for file in details.files { // Iterate by value to move into tasks
-         // Clone necessary data for the file download task
-         let client_clone = client.clone();
-         let base_dir_clone = base_dir.to_string();
+        // Spawn a download task for each file concurrently
+        for file in details.files { // Iterate by value to move into tasks
+            // Clone necessary data for the file download task
+            let client_clone = client.clone();
+            let base_dir_clone = base_dir.to_string();
          let item_id_clone = item_id.to_string();
          let progress_tx_clone = progress_tx.clone();
          let file_semaphore_clone = Arc::clone(&file_semaphore); // Use renamed semaphore
@@ -743,7 +729,7 @@ async fn download_item(
          file_join_handles.push(handle);
      }
 
-     // Wait for all file download tasks for this item to complete
+     // Wait for all file download tasks for this item to complete (Direct Mode)
      for handle in file_join_handles {
          match handle.await {
              Ok(Ok(_)) => {
@@ -764,14 +750,15 @@ async fn download_item(
          }
      }
 
-     // Send item completion status based on whether any file task failed
+     // Send item completion status based on whether any file task failed (Direct Mode)
      let success_status = !item_failed;
      info!("Finished processing item '{}' (Direct mode). Success: {}", item_id, success_status);
      let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), success_status)).await;
 
      // Return Ok even if some files failed, ItemCompleted indicates success/failure of the item overall
      Ok(())
-}
+    } // End else block for Direct Mode
+} // End download_item function
 
 /// Downloads all items for a specific collection identifier.
 async fn download_collection(
