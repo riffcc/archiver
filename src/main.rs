@@ -348,6 +348,15 @@ async fn main() -> Result<()> {
                          let status_prefix = if success { "Completed item" } else { "Finished item (with errors)" };
                          app.download_status = Some(format!("{}: {}", status_prefix, id));
                      }
+                     DownloadProgress::ItemSkippedWasCollection(id) => {
+                        // Increment downloaded count as we 'processed' it by skipping
+                        app.items_downloaded_count += 1;
+                        app.download_status = Some(format!("Skipped (is collection): {}", id));
+                        // Optional: Add logic here to queue a download for the discovered collection 'id'
+                        // E.g., app.pending_action = Some(UpdateAction::StartDownload(DownloadAction::Collection(id)));
+                        // For now, just log and update status.
+                        info!("Identified '{}' as a collection during TorrentOnly download attempt.", id);
+                     }
                      DownloadProgress::CollectionCompleted(total, failed) => {
                          app.is_downloading = false; // Collection finished
                          app.download_start_time = None; // Clear start time
@@ -613,21 +622,56 @@ async fn download_item(
                 debug!("Assumed torrent download task completed successfully for item '{}'.", item_id);
                 true
             }
-            Ok(Err(e)) => {
-                error!("Assumed torrent download task failed for item {}: {}", item_id, e);
-                // Send specific error if download failed (e.g., 404 Not Found)
-                let _ = progress_tx.send(DownloadProgress::Error(format!("Failed to download assumed torrent for {}: {}", item_id, e))).await;
-                false
+            Ok(Err(e)) => { // Torrent download task completed but reported an error (e.g., 404)
+                warn!("Assumed torrent download failed for item '{}': {}. Fetching metadata to check if it's a collection.", item_id, e);
+                let _ = progress_tx.send(DownloadProgress::Status(format!("Torrent download failed for {}, checking metadata...", item_id))).await;
+
+                // Fetch metadata to check if it's a collection
+                let limiter_clone_details = Arc::clone(&rate_limiter);
+                match archive_api::fetch_item_details(client, item_id, limiter_clone_details).await {
+                    Ok(details) => {
+                        // Check mediatype in the fetched metadata
+                        if let Some(metadata) = details.metadata {
+                             if metadata.mediatype == Some("collection".to_string()) {
+                                info!("Item '{}' is actually a collection. Skipping torrent download.", item_id);
+                                let _ = progress_tx.send(DownloadProgress::ItemSkippedWasCollection(item_id.to_string())).await;
+                                // Mark item processing as 'successful' in the sense that we handled it (by skipping)
+                                // The CollectionCompleted count won't increment 'failed' for this.
+                                return Ok(()); // Exit download_item successfully after skipping
+                            } else {
+                                warn!("Item '{}' is not a collection (mediatype: {:?}). Torrent download failed.", item_id, metadata.mediatype);
+                            }
+                        } else {
+                             warn!("Metadata object missing in details response for '{}'. Assuming not a collection.", item_id);
+                        }
+                    }
+                    Err(fetch_err) => {
+                        // Metadata fetch failed after torrent download failed
+                        error!("Failed to fetch metadata for item '{}' after torrent download failed: {}", item_id, fetch_err);
+                        // Proceed to mark item as failed below
+                    }
+                }
+                // If we reach here, it means torrent download failed AND (metadata fetch failed OR it wasn't a collection)
+                // Mark the item as failed.
+                let _ = progress_tx.send(DownloadProgress::Error(format!("Torrent download failed for {}: {}", item_id, e))).await;
+                false // item_success = false
             }
-            Err(e) => { // Task panicked
+            Err(e) => { // Torrent download task panicked
                 error!("Assumed torrent download task panicked for item {}: {}", item_id, e);
                 let _ = progress_tx.send(DownloadProgress::Error(format!("Torrent download task panicked for item {}: {}", item_id, e))).await;
                 false
             }
         };
 
-        info!("Finished processing item '{}' (TorrentOnly mode - direct attempt). Success: {}", item_id, item_success);
-        let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), item_success)).await;
+        // Only send ItemCompleted if we didn't already send ItemSkippedWasCollection
+        if item_success {
+            info!("Finished processing item '{}' (TorrentOnly mode - direct attempt). Success: {}", item_id, item_success);
+            let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), item_success)).await;
+        } else {
+             // Failure case (torrent download failed and it wasn't identified as a collection, or task panicked)
+             info!("Finished processing item '{}' (TorrentOnly mode - direct attempt). Success: false", item_id);
+             let _ = progress_tx.send(DownloadProgress::ItemCompleted(item_id.to_string(), false)).await;
+        }
         return Ok(()); // Finished processing this item in TorrentOnly mode
 
     } else { // Direct Mode

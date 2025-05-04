@@ -65,6 +65,7 @@ pub struct MetadataDetails {
     pub description: Option<serde_json::Value>,
     pub date: Option<String>, // Date can be in various formats, parse later
     pub publicdate: Option<String>, // Changed back to String to avoid parsing errors
+    pub mediatype: Option<String>, // Added mediatype field
     pub uploader: Option<String>,
     pub collection: Option<serde_json::Value>, // Changed to Value for flexibility
     // Use HashMap for other potential metadata fields we don't explicitly define

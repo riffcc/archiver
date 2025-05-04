@@ -157,6 +157,8 @@ pub enum DownloadProgress {
     FileCompleted(String), // filename
     /// An item download finished (successfully or with partial failure).
     ItemCompleted(String, bool), // identifier, success (true if all files OK)
+    /// An item download was skipped because the identifier was actually a collection.
+    ItemSkippedWasCollection(String), // identifier
     /// The entire collection download attempt finished.
     CollectionCompleted(usize, usize), // total items attempted, total items failed
     /// An error occurred during download.
