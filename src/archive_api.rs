@@ -514,6 +514,8 @@ pub async fn fetch_item_details(
             })
         }
     }
+} // <-- Add missing closing brace for fetch_item_details function
+
 // Removed FetchAllResult enum and fetch_all_collection_items_incremental function
 
 
