@@ -1,8 +1,8 @@
-use anyhow::{anyhow, Context, Result}; // Added Context back
+use anyhow::{anyhow, Result}; // Removed unused Context
 use log::{debug, error, info, warn}; // Import log macros
 use reqwest::{Client, StatusCode}; // Import StatusCode
 use serde::{Deserialize, Serialize}; // Added Serialize
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap; // Removed unused sync::Arc
 // Removed mpsc import as FetchAllResult is removed
 use tokio::time::{sleep, Duration as TokioDuration}; // Import sleep and Tokio Duration for retries
 use crate::app::AppRateLimiter; // Use the type alias from app.rs
@@ -26,7 +26,8 @@ struct JsonpResponseWrapper {
 struct JsonpResponseContent {
     #[serde(rename = "numFound")]
     num_found: usize,
-    start: usize,
+    #[allow(dead_code)] // Allow dead code for this field specifically
+    start: usize, // Keep original name for deserialization, allow dead code
     docs: Vec<ArchiveDoc>,
 }
 
@@ -656,43 +657,5 @@ mod tests {
 
     // Removed test_fetch_item_details_integration_minimal_metadata as it used an invalid identifier
 
-    #[tokio::test]
-    #[ignore]
-    async fn test_fetch_collection_items_total_found_nasa() {
-        // Arrange
-        let client = test_client(); // Use helper function
-        let collection_name = "nasa";
-        let rows = 1; // Only need 1 row to get the total count
-        let page = 1;
-        let limiter = test_limiter(); // Create dummy limiter
-
-        // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page, limiter).await;
-
-        // Assert
-        assert!(result.is_ok(), "API call should succeed");
-        let (_items, total_found) = result.unwrap();
-        assert!(total_found > 1000, "NASA collection should have many items (found {})", total_found); // Check for a reasonably large number
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_fetch_collection_items_total_found_nonexistent() {
-        // Arrange
-        let client = test_client(); // Use helper function
-        let collection_name = "this_collection_definitely_does_not_exist_1234567890";
-        let rows = 1;
-        let page = 1;
-        let limiter = test_limiter(); // Create dummy limiter
-
-        // Act
-        let result = fetch_collection_items(&client, collection_name, rows, page, limiter).await;
-
-        // Assert
-        assert!(result.is_ok(), "API call should succeed even for non-existent collection");
-        let (_items, total_found) = result.unwrap();
-        assert_eq!(total_found, 0, "Total found should be 0 for non-existent collection");
-    }
-
-    // Removed test_fetch_collection_items_total_found_nasa and nonexistent as bulk fetch covers this
+    // Removed leftover tests calling the old fetch_collection_items function
 }
