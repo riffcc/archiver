@@ -648,19 +648,16 @@ async fn download_item(
                 let limiter_clone_details = Arc::clone(&rate_limiter);
                 match archive_api::fetch_item_details(client, item_id, limiter_clone_details).await {
                     Ok(details) => {
-                        // Check mediatype in the fetched metadata
-                        if let Some(metadata) = details.metadata {
-                             if metadata.mediatype == Some("collection".to_string()) {
-                                info!("Item '{}' is actually a collection. Skipping torrent download.", item_id);
-                                let _ = progress_tx.send(DownloadProgress::ItemSkippedWasCollection(item_id.to_string())).await;
-                                // Mark item processing as 'successful' in the sense that we handled it (by skipping)
+                        // Check mediatype directly on the processed ItemDetails struct
+                        if details.mediatype == Some("collection".to_string()) {
+                             info!("Item '{}' is actually a collection. Skipping torrent download.", item_id);
+                             let _ = progress_tx.send(DownloadProgress::ItemSkippedWasCollection(item_id.to_string())).await;
+                             // Mark item processing as 'successful' in the sense that we handled it (by skipping)
                                 // The CollectionCompleted count won't increment 'failed' for this.
                                 return Ok(()); // Exit download_item successfully after skipping
-                            } else {
-                                warn!("Item '{}' is not a collection (mediatype: {:?}). Torrent download failed.", item_id, metadata.mediatype);
-                            }
                         } else {
-                             warn!("Metadata object missing in details response for '{}'. Assuming not a collection.", item_id);
+                            // If mediatype is None or not "collection", proceed to mark as failed download
+                            warn!("Item '{}' is not a collection (mediatype: {:?}). Torrent download failed.", item_id, details.mediatype);
                         }
                     }
                     Err(fetch_err) => {

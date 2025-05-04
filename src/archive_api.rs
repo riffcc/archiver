@@ -110,6 +110,7 @@ pub struct ItemDetails {
     pub date: Option<String>, // Keep as string for now due to format variety
     pub uploader: Option<String>,
     pub collections: Vec<String>,
+    pub mediatype: Option<String>, // Added mediatype field
     pub files: Vec<FileDetails>, // Store the list of files
     pub download_base_url: Option<String>, // Constructed base URL for downloads
 }
@@ -389,7 +390,7 @@ pub async fn fetch_item_details(
 
                 // Process into our ItemDetails struct
                 // Handle Option<MetadataDetails> explicitly instead of unwrap_or_default
-                let (title, creator, description, date, uploader, collections) =
+                let (title, creator, description, date, uploader, collections, mediatype) = // Added mediatype
                     if let Some(metadata) = &raw_details.metadata {
                          (
                             get_first_string(&metadata.title),
@@ -398,10 +399,11 @@ pub async fn fetch_item_details(
                             metadata.date.clone(), // Clone the Option<String>
                             metadata.uploader.clone(), // Clone the Option<String>
                             get_string_array(&metadata.collection), // Use helper for collection
+                            metadata.mediatype.clone(), // Clone the Option<String> for mediatype
                         )
                     } else {
                         // If metadata object is missing entirely, return None/empty values
-                        (None, None, None, None, None, Vec::new())
+                        (None, None, None, None, None, Vec::new(), None) // Added None for mediatype
                     };
 
                 let download_base_url = match (raw_details.server, raw_details.dir) {
@@ -419,6 +421,7 @@ pub async fn fetch_item_details(
                     date,                               // Use processed value
                     uploader,                           // Use processed value
                     collections,                        // Use processed value
+                    mediatype,                          // Use processed value
                     files: match raw_details.files {
                         // Handle the case where 'files' is a JSON Array
                         Some(serde_json::Value::Array(files_array)) => {
