@@ -1,7 +1,7 @@
 use crate::archive_api::{ArchiveDoc, FileDetails, ItemDetails};
 use crate::settings::Settings;
 // Use SystemClock and align middleware Instant type
-use anyhow::{Context, Result}; // Add Result
+use anyhow::{anyhow, Context, Result}; // Add anyhow macro import, Add Result
 use governor::{RateLimiter, clock::SystemClock, state::{InMemoryState, direct::NotKeyed}, middleware::NoOpMiddleware}; // Corrected InMemoryState path
 use ratatui::widgets::ListState;
 use reqwest::Client;
