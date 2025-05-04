@@ -143,7 +143,7 @@ impl std::error::Error for FetchDetailsError {
 
 
 // --- Constants ---
-const ROWS_PER_PAGE: usize = 100; // Number of results to fetch per API call during pagination
+const ROWS_PER_PAGE: usize = 10000; // Number of results to fetch per API call during pagination
 
 // --- API Fetch Functions ---
 
