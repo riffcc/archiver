@@ -103,13 +103,37 @@ fn handle_collections_pane_input(app: &mut App, key_event: KeyEvent) {
         KeyCode::Enter => {
             if let Some(collection_name) = app.get_selected_collection().cloned() {
                 app.current_collection_name = Some(collection_name.clone());
-                app.items.clear(); // Clear previous items
-                app.item_list_state.select(None); // Reset item selection
-                app.total_items_found = None; // Reset total count
-                app.is_loading = true; // Set loading flag for items
-                // Dispatch the new action to start incremental fetching
-                app.pending_action = Some(UpdateAction::StartIncrementalItemFetch(collection_name));
-                app.active_pane = ActivePane::Items; // Switch focus to items pane
+                app.items.clear(); // Clear previous items before attempting load/fetch
+                app.item_list_state.select(None);
+                app.total_items_found = None;
+
+                // Attempt to load from cache first
+                match app.load_items_from_cache(&collection_name) {
+                    Ok(cached_items) => {
+                        log::info!("Loaded {} items from cache for collection '{}'", cached_items.len(), collection_name);
+                        app.items = cached_items;
+                        app.total_items_found = Some(app.items.len()); // Set total found from cache
+                        app.is_loading = false; // Not loading from network
+                        // Select first item if cache wasn't empty
+                        if !app.items.is_empty() {
+                            app.item_list_state.select(Some(0));
+                        }
+                        app.pending_action = None; // No network fetch needed
+                    }
+                    Err(e) => {
+                        // Cache miss or error, proceed with network fetch
+                        log::warn!("Failed to load items from cache for '{}' ({}). Fetching from network.", collection_name, e);
+                        // Keep items clear, reset selection/count
+                        app.items.clear();
+                        app.item_list_state.select(None);
+                        app.total_items_found = None;
+                        app.is_loading = true; // Set loading flag for network fetch
+                        // Dispatch the action to start incremental fetching
+                        app.pending_action = Some(UpdateAction::StartIncrementalItemFetch(collection_name.clone()));
+                    }
+                }
+                // Always switch focus to items pane after attempting load or starting fetch
+                app.active_pane = ActivePane::Items;
             }
         }
         KeyCode::Char('a') => {

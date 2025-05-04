@@ -493,6 +493,49 @@ impl App {
          }
      }
 
+    /// Helper function to construct the path to the item cache file for a collection.
+    /// Returns None if download directory or collection name is missing.
+    fn get_item_cache_path(&self, collection_name: &str) -> Option<PathBuf> {
+        self.settings
+            .download_directory
+            .as_ref()
+            .map(|base_dir| {
+                Path::new(base_dir)
+                    .join(".item_cache")
+                    .join(format!("{}.json", collection_name))
+            })
+    }
+
+    /// Attempts to load the item list for a collection from its cache file.
+    /// Returns `Ok(Vec<ArchiveDoc>)` on success, or an `anyhow::Error` if the cache
+    /// file doesn't exist, cannot be read, or contains invalid JSON.
+    pub fn load_items_from_cache(&self, collection_name: &str) -> Result<Vec<ArchiveDoc>> {
+        log::debug!("Attempting to load items from cache for collection: {}", collection_name);
+
+        let cache_file_path = self.get_item_cache_path(collection_name)
+            .context("Cannot determine cache path (download directory or collection name missing)")?;
+        log::debug!("Looking for cache file at: {}", cache_file_path.display());
+
+        if !cache_file_path.exists() {
+            log::debug!("Cache file not found: {}", cache_file_path.display());
+            return Err(anyhow!("Cache file not found")); // Specific error for not found
+        }
+
+        log::debug!("Reading cache file: {}", cache_file_path.display());
+        let json_data = fs::read_to_string(&cache_file_path)
+            .context(format!("Failed to read cache file: {}", cache_file_path.display()))?;
+        log::debug!("Read {} bytes from cache file.", json_data.len());
+
+        log::debug!("Parsing JSON data from cache file...");
+        let items: Vec<ArchiveDoc> = serde_json::from_str(&json_data)
+            .context(format!("Failed to parse JSON from cache file: {}", cache_file_path.display()))?;
+        log::debug!("Successfully parsed {} items from cache.", items.len());
+
+        log::info!("Successfully loaded {} items from cache file: {}", items.len(), cache_file_path.display());
+        Ok(items)
+    }
+
+
     /// Appends newly fetched items to the list and saves the entire list to the cache file.
     /// The cache path is constructed as `$download_dir/.item_cache/$collection_name.json`.
     /// Returns `Ok(())` on success, or an `anyhow::Error` if saving fails or prerequisites are missing.
@@ -520,28 +563,28 @@ impl App {
         let collection_name = self
             .current_collection_name
             .as_ref()
-            .context("Current collection name is not set in app state")?; // Should be set before fetch starts
+            .context("Current collection name is not set in app state")?;
         log::debug!("Collection name found: {}", collection_name);
 
-        // 3. Construct the cache file path
-        log::debug!("Constructing cache file path...");
-        let cache_dir = Path::new(download_dir);
-        // Use a specific cache subdirectory for item lists
-        let item_cache_dir = cache_dir.join(".item_cache");
-        let cache_file_path = item_cache_dir.join(format!("{}.json", collection_name));
-        log::debug!("Target cache directory: {}", item_cache_dir.display());
+        // 3. Construct the cache file path using the helper
+        let cache_file_path = self.get_item_cache_path(collection_name)
+            .context("Cannot determine cache path for saving (download directory missing)")?;
         log::debug!("Target cache file path: {}", cache_file_path.display());
 
+        // Ensure the parent directory exists (the helper doesn't create it)
+        if let Some(parent_dir) = cache_file_path.parent() {
+             log::debug!("Ensuring cache directory exists: {}", parent_dir.display());
+             fs::create_dir_all(parent_dir).context(format!(
+                 "Failed to create cache directory: {}",
+                 parent_dir.display()
+             ))?;
+             log::debug!("Cache directory ensured.");
+        } else {
+             // This case should be unlikely if the path is constructed correctly
+             return Err(anyhow!("Could not determine parent directory for cache file"));
+        }
 
-        // 4. Ensure the specific item cache directory exists
-        log::debug!("Ensuring item cache directory exists...");
-        fs::create_dir_all(&item_cache_dir).context(format!(
-            "Failed to create item cache directory: {}",
-            item_cache_dir.display()
-        ))?;
-        log::debug!("Item cache directory ensured.");
-
-        // 5. Serialize the *entire current* items list to JSON
+        // 4. Serialize the *entire current* items list to JSON
         log::debug!("Serializing {} items to JSON...", self.items.len());
         let json_data = serde_json::to_string_pretty(&self.items)
             .context("Failed to serialize item list to JSON")?;
