@@ -1,4 +1,4 @@
-# archiver
+# librarian
 Content curation, scraping, preservation and Codex integration
 
 ## Usage
