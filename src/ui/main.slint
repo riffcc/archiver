@@ -1,0 +1,424 @@
+import { ScrollView, LineEdit, GridBox } from "std-widgets.slint";
+
+export struct MediaItem {
+    id: string,
+    title: string,
+    artist: string,
+    year: int,
+    visited: bool,
+    selected: bool,
+    item_type: string,
+    thumbnail: image,
+}
+
+component MediaTile inherits Rectangle {
+    in property <MediaItem> item;
+    in property <bool> focused;
+    in property <int> index;
+    callback clicked();
+    
+    width: 280px;
+    height: 320px;
+    border-radius: 8px;
+    background: item.visited ? #27272a : #18181b;
+    border-color: focused ? #7c3aed : (item.selected ? #6d28d9 : transparent);
+    border-width: focused ? 3px : (item.selected ? 2px : 0);
+    
+    animate background { duration: 150ms; }
+    animate border-color { duration: 150ms; }
+    animate border-width { duration: 150ms; }
+    
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+    
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        
+        // Thumbnail area
+        Rectangle {
+            height: 200px;
+            background: #09090b;
+            border-radius: 6px;
+            
+            // Placeholder for album art/thumbnail
+            Text {
+                text: "🎵";
+                font-size: 48px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                color: #3f3f46;
+            }
+            
+            // Selection indicator
+            if item.selected : Rectangle {
+                x: parent.width - 40px;
+                y: 8px;
+                width: 32px;
+                height: 32px;
+                border-radius: 16px;
+                background: #7c3aed;
+                
+                Text {
+                    text: "✓";
+                    color: white;
+                    font-size: 18px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        
+        // Text info
+        VerticalLayout {
+            spacing: 4px;
+            
+            Text {
+                text: item.title;
+                font-size: 16px;
+                font-weight: 600;
+                color: white;
+                overflow: elide;
+            }
+            
+            Text {
+                text: item.artist;
+                font-size: 14px;
+                color: #a1a1aa;
+                overflow: elide;
+            }
+            
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: item.year;
+                    font-size: 13px;
+                    color: #71717a;
+                }
+                Text {
+                    text: item.item_type;
+                    font-size: 13px;
+                    color: #71717a;
+                }
+            }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Librarian - Riff.CC Media Archive";
+    preferred-width: 3440px;
+    preferred-height: 1440px;
+    min-width: 1280px;
+    min-height: 720px;
+    background: #09090b;
+    
+    in-out property <[MediaItem]> items: [
+        { id: "1", title: "78 RPM Collection", artist: "Various Artists", year: 1920, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
+        { id: "2", title: "Jazz Archives", artist: "Duke Ellington", year: 1935, visited: true, selected: false, item_type: "Album", thumbnail: @image-url("") },
+        { id: "3", title: "Classical Recordings", artist: "Berlin Philharmonic", year: 1960, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
+        { id: "4", title: "Folk Music Treasury", artist: "Various Artists", year: 1965, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
+        { id: "5", title: "Blues Masters", artist: "B.B. King", year: 1970, visited: true, selected: false, item_type: "Album", thumbnail: @image-url("") },
+        { id: "6", title: "World Music", artist: "Various Artists", year: 1980, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
+        { id: "7", title: "Radio Shows Archive", artist: "Various", year: 1940, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
+        { id: "8", title: "Live Concerts", artist: "Various Artists", year: 1975, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
+        { id: "9", title: "Spoken Word", artist: "Various", year: 1950, visited: true, selected: false, item_type: "Collection", thumbnail: @image-url("") },
+        { id: "10", title: "Electronic Music", artist: "Kraftwerk", year: 1974, visited: false, selected: false, item_type: "Album", thumbnail: @image-url("") },
+        { id: "11", title: "Punk Archives", artist: "The Ramones", year: 1976, visited: false, selected: false, item_type: "Album", thumbnail: @image-url("") },
+        { id: "12", title: "Reggae Collection", artist: "Bob Marley", year: 1973, visited: true, selected: false, item_type: "Album", thumbnail: @image-url("") },
+    ];
+    
+    in-out property <string> search-query: "";
+    in-out property <int> focused-index: 0;
+    in-out property <bool> player-visible: false;
+    in-out property <int> selected-count: 0;
+    in-out property <int> cols-per-row: Math.floor((self.width - 96px) / 304px); // 280px tile + 24px spacing
+    
+    callback toggle-select(int);
+    callback download-selected();
+    callback play-item(int);
+    callback enter-item(int);
+    
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                if focused-index > 0 {
+                    focused-index = focused-index - 1;
+                }
+                return accept;
+            } else if event.text == Key.RightArrow {
+                if focused-index < items.length - 1 {
+                    focused-index = focused-index + 1;
+                }
+                return accept;
+            } else if event.text == Key.UpArrow {
+                if focused-index >= cols-per-row {
+                    focused-index = focused-index - cols-per-row;
+                }
+                return accept;
+            } else if event.text == Key.DownArrow {
+                if focused-index + cols-per-row < items.length {
+                    focused-index = focused-index + cols-per-row;
+                }
+                return accept;
+            } else if event.text == Key.Space {
+                toggle-select(focused-index);
+                return accept;
+            } else if event.text == Key.Return {
+                enter-item(focused-index);
+                return accept;
+            }
+            reject
+        }
+        
+        VerticalLayout {
+        // Header
+        Rectangle {
+            height: 80px;
+            background: #18181b;
+            
+            HorizontalLayout {
+                padding-left: 48px;
+                padding-right: 48px;
+                alignment: space-between;
+                
+                HorizontalLayout {
+                    spacing: 24px;
+                    alignment: center;
+                    
+                    Text {
+                        text: "Librarian";
+                        font-size: 28px;
+                        font-weight: 700;
+                        color: white;
+                        vertical-alignment: center;
+                    }
+                    
+                    // Search bar
+                    Rectangle {
+                        width: 400px;
+                        height: 48px;
+                        background: #09090b;
+                        border-radius: 24px;
+                        border-color: #3f3f46;
+                        border-width: 1px;
+                        
+                        HorizontalLayout {
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            
+                            LineEdit {
+                                placeholder-text: "Search collections or items...";
+                                text <=> search-query;
+                                font-size: 16px;
+                            }
+                        }
+                    }
+                }
+                
+                // Controls hint
+                HorizontalLayout {
+                    spacing: 32px;
+                    alignment: center;
+                    
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            border-radius: 16px;
+                            background: #22c55e;
+                            Text {
+                                text: "A";
+                                color: white;
+                                font-size: 16px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: "Download";
+                            color: #a1a1aa;
+                            font-size: 16px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            border-radius: 16px;
+                            background: #3b82f6;
+                            Text {
+                                text: "X";
+                                color: white;
+                                font-size: 16px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: "Select";
+                            color: #a1a1aa;
+                            font-size: 16px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    
+                    if selected-count > 0 : Text {
+                        text: selected-count + " selected";
+                        color: #7c3aed;
+                        font-size: 16px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+        
+        // Main content area
+        ScrollView {
+            Rectangle {
+                background: transparent;
+                
+                // Dynamic grid layout
+                VerticalLayout {
+                    padding: 48px;
+                    spacing: 24px;
+                    
+                    for row in [0, 1, 2, 3, 4]: HorizontalLayout {
+                        spacing: 24px;
+                        
+                        for col in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]: Rectangle {
+                            property <int> idx: row * cols-per-row + col;
+                            visible: idx < items.length && col < cols-per-row;
+                            width: self.visible ? 280px : 0px;
+                            height: self.visible ? 320px : 0px;
+                            
+                            if idx < items.length && col < cols-per-row: MediaTile {
+                                item: items[idx];
+                                focused: idx == focused-index;
+                                index: idx;
+                                clicked => { focused-index = idx; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Player bar (hidden by default)
+        if player-visible : Rectangle {
+            height: 100px;
+            background: #18181b;
+            border-color: #27272a;
+            border-width: 1px;
+            
+            HorizontalLayout {
+                padding: 20px;
+                spacing: 24px;
+                alignment: center;
+                
+                // Now playing info
+                HorizontalLayout {
+                    spacing: 16px;
+                    width: 400px;
+                    
+                    Rectangle {
+                        width: 60px;
+                        height: 60px;
+                        background: #09090b;
+                        border-radius: 4px;
+                    }
+                    
+                    VerticalLayout {
+                        spacing: 4px;
+                        alignment: center;
+                        
+                        Text {
+                            text: "Track Title";
+                            font-size: 16px;
+                            font-weight: 600;
+                            color: white;
+                        }
+                        Text {
+                            text: "Artist Name";
+                            font-size: 14px;
+                            color: #a1a1aa;
+                        }
+                    }
+                }
+                
+                // Player controls
+                HorizontalLayout {
+                    spacing: 16px;
+                    alignment: center;
+                    
+                    Rectangle {
+                        width: 48px;
+                        height: 48px;
+                        border-radius: 24px;
+                        background: #3f3f46;
+                        Text {
+                            text: "⏮";
+                            font-size: 20px;
+                            color: white;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    
+                    Rectangle {
+                        width: 56px;
+                        height: 56px;
+                        border-radius: 28px;
+                        background: #7c3aed;
+                        Text {
+                            text: "▶";
+                            font-size: 24px;
+                            color: white;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    
+                    Rectangle {
+                        width: 48px;
+                        height: 48px;
+                        border-radius: 24px;
+                        background: #3f3f46;
+                        Text {
+                            text: "⏭";
+                            font-size: 20px;
+                            color: white;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                
+                // Progress bar
+                Rectangle {
+                    width: 600px; // Fixed width to avoid binding loop
+                    height: 6px;
+                    background: #3f3f46;
+                    border-radius: 3px;
+                    
+                    Rectangle {
+                        width: parent.width * 0.3;
+                        height: parent.height;
+                        background: #7c3aed;
+                        border-radius: 3px;
+                    }
+                }
+            }
+        }
+    }  // End VerticalLayout
+    }  // End FocusScope
+}
