@@ -1,11 +1,41 @@
 use gilrs::{Gilrs, Button, Event, EventType, Axis};
-use slint::{ComponentHandle, Model};
+use slint::{ComponentHandle, Model, SharedPixelBuffer, Rgba8Pixel};
 use std::sync::{Arc, Mutex};
+use std::path::Path;
+
+mod archive_org;
+mod config;
+
+use archive_org::ArchiveOrgClient;
+use config::LibrarianConfig;
 
 slint::include_modules!();
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = MainWindow::new()?;
+    
+    // Set up configuration
+    let config = Arc::new(LibrarianConfig::new()?);
+    config.ensure_thumbnail_cache_dir()?;
+    
+    // Load initial Archive.org audio collections
+    let ui_load = ui.as_weak();
+    let config_clone = config.clone();
+    tokio::spawn(async move {
+        let client = ArchiveOrgClient::new();
+        
+        match client.search_audio_collections(1, 50).await {
+            Ok(response) => {
+                let _ = ui_load.upgrade_in_event_loop(move |ui| {
+                    load_archive_items(ui, response.response.docs, &*config_clone);
+                });
+            }
+            Err(e) => {
+                eprintln!("Failed to load Archive.org collections: {}", e);
+            }
+        }
+    });
     
     // Shared state for analog stick deadzone and repeat timing
     let last_stick_move = Arc::new(Mutex::new(std::time::Instant::now()));
@@ -224,4 +254,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.run()?;
     
     Ok(())
+}
+
+fn load_archive_items(ui: &MainWindow, items: Vec<archive_org::ArchiveOrgItem>, config: &LibrarianConfig) {
+    let mut media_items = vec![];
+    
+    for (i, item) in items.iter().take(50).enumerate() {
+        let media_item = MediaItem {
+            id: slint::SharedString::from(item.identifier.clone()),
+            title: slint::SharedString::from(item.title.clone().unwrap_or_else(|| item.identifier.clone())),
+            artist: slint::SharedString::from(item.creator.clone().unwrap_or_default()),
+            year: item.date.as_ref()
+                .and_then(|d| d.split('-').next())
+                .and_then(|y| y.parse::<i32>().ok())
+                .unwrap_or(0),
+            visited: false,
+            selected: false,
+            item_type: slint::SharedString::from(item.mediatype.clone().unwrap_or_else(|| "audio".to_string())),
+            thumbnail: slint::Image::default(),
+        };
+        media_items.push(media_item);
+        
+        // Load thumbnail asynchronously
+        let ui_weak = ui.as_weak();
+        let identifier = item.identifier.clone();
+        let cache_path = config.thumbnail_cache_path(&identifier);
+        let index = i;
+        
+        tokio::spawn(async move {
+            if let Ok(image_data) = load_or_fetch_thumbnail(&identifier, &cache_path).await {
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    if let Ok(img) = image::load_from_memory(&image_data) {
+                        let rgba = img.to_rgba8();
+                        let width = rgba.width();
+                        let height = rgba.height();
+                        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                            rgba.as_raw(),
+                            width,
+                            height,
+                        );
+                        
+                        let items = ui.get_items();
+                        if let Some(mut item) = items.iter().nth(index).cloned() {
+                            item.thumbnail = slint::Image::from_rgba8(buffer);
+                            
+                            // Update the specific item
+                            let mut new_items: Vec<MediaItem> = items.iter().cloned().collect();
+                            if index < new_items.len() {
+                                new_items[index] = item;
+                                let items_model = std::rc::Rc::new(slint::VecModel::from(new_items));
+                                ui.set_items(slint::ModelRc::from(items_model));
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    }
+    
+    let items_model = std::rc::Rc::new(slint::VecModel::from(media_items));
+    ui.set_items(slint::ModelRc::from(items_model));
+}
+
+async fn load_or_fetch_thumbnail(identifier: &str, cache_path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Check if cached
+    if cache_path.exists() {
+        return Ok(tokio::fs::read(cache_path).await?);
+    }
+    
+    // Fetch from Archive.org
+    let client = ArchiveOrgClient::new();
+    let image_data = client.download_thumbnail(identifier).await?;
+    
+    // Cache it
+    if let Some(parent) = cache_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(cache_path, &image_data).await?;
+    
+    Ok(image_data)
 }

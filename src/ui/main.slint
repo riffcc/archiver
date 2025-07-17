@@ -41,9 +41,18 @@ component MediaTile inherits Rectangle {
             height: 200px;
             background: #09090b;
             border-radius: 6px;
+            clip: true;
             
-            // Placeholder for album art/thumbnail
-            Text {
+            // Show thumbnail if available
+            if item.thumbnail.width > 0 && item.thumbnail.height > 0 : Image {
+                source: item.thumbnail;
+                image-fit: cover;
+                width: 100%;
+                height: 100%;
+            }
+            
+            // Show placeholder if no thumbnail
+            if item.thumbnail.width == 0 || item.thumbnail.height == 0 : Text {
                 text: "🎵";
                 font-size: 48px;
                 horizontal-alignment: center;
@@ -115,20 +124,7 @@ export component MainWindow inherits Window {
     min-height: 720px;
     background: #09090b;
     
-    in-out property <[MediaItem]> items: [
-        { id: "1", title: "78 RPM Collection", artist: "Various Artists", year: 1920, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
-        { id: "2", title: "Jazz Archives", artist: "Duke Ellington", year: 1935, visited: true, selected: false, item_type: "Album", thumbnail: @image-url("") },
-        { id: "3", title: "Classical Recordings", artist: "Berlin Philharmonic", year: 1960, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
-        { id: "4", title: "Folk Music Treasury", artist: "Various Artists", year: 1965, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
-        { id: "5", title: "Blues Masters", artist: "B.B. King", year: 1970, visited: true, selected: false, item_type: "Album", thumbnail: @image-url("") },
-        { id: "6", title: "World Music", artist: "Various Artists", year: 1980, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
-        { id: "7", title: "Radio Shows Archive", artist: "Various", year: 1940, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
-        { id: "8", title: "Live Concerts", artist: "Various Artists", year: 1975, visited: false, selected: false, item_type: "Collection", thumbnail: @image-url("") },
-        { id: "9", title: "Spoken Word", artist: "Various", year: 1950, visited: true, selected: false, item_type: "Collection", thumbnail: @image-url("") },
-        { id: "10", title: "Electronic Music", artist: "Kraftwerk", year: 1974, visited: false, selected: false, item_type: "Album", thumbnail: @image-url("") },
-        { id: "11", title: "Punk Archives", artist: "The Ramones", year: 1976, visited: false, selected: false, item_type: "Album", thumbnail: @image-url("") },
-        { id: "12", title: "Reggae Collection", artist: "Bob Marley", year: 1973, visited: true, selected: false, item_type: "Album", thumbnail: @image-url("") },
-    ];
+    in-out property <[MediaItem]> items: [];
     
     in-out property <string> search-query: "";
     in-out property <int> focused-index: 0;
